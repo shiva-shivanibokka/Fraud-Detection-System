@@ -1,6 +1,6 @@
 # Fraud Detection System
 
-A **production-grade real-time fraud detection system** built to mirror the architecture used by Stripe, Uber, PayPal, and Visa. Not a Kaggle notebook — a complete decision intelligence platform with streaming velocity features, graph-based fraud ring detection, auto-generated blocking rules, and sub-millisecond inference.
+A **production-grade fraud detection system** built to mirror the architecture used by Stripe, Uber, PayPal, and Visa. Not a Kaggle notebook — a complete decision intelligence platform with offline-computed velocity features, graph-based fraud ring detection, auto-generated blocking rules, and sub-millisecond batch inference.
 
 ## What Makes This Different
 
@@ -10,7 +10,7 @@ A **production-grade real-time fraud detection system** built to mirror the arch
 | Random 80/20 train/test split | Strict temporal split (2019 train / 2020 test) — no label leakage |
 | AUC as the only metric | Precision@K, Recall@0.1%FPR, Dollar Value Captured |
 | No graph signals | Entity graph (card↔device↔IP↔merchant) + GraphSAGE embeddings |
-| No velocity features | Redis sliding windows: 1min/10min/1hr/6hr/24hr per entity |
+| No velocity features | Redis-backed sliding windows: 1min/10min/1hr/6hr/24hr per entity (offline-computed for training) |
 | No fraud ring detection | Stripe-style similarity learning + connected components |
 | No pattern mining | Uber RADAR-style FP-Growth auto-rule generation |
 | Static evaluation | Concept drift curve: AUC per calendar month |
@@ -30,7 +30,7 @@ Layer 1: Rules Engine (<1ms)
 Layer 2: ML Inference (<20ms)
   - Feature assembly:
     (1) Tabular features (amount, category, geo distance, time-of-day)
-    (2) Velocity features (Redis sliding windows per card/device/IP/merchant)
+    (2) Velocity features (offline sliding windows per card/device/IP/merchant)
     (3) Graph features (entity degree, fraud ring membership, neighbor fraud rate)
     (4) GNN embeddings (64-dim GraphSAGE fraud risk vector per card)
   - XGBoost inference (exported to ONNX/UBJ for fast serving)
@@ -79,12 +79,14 @@ These rules are reviewed by analysts before activation — the same workflow as 
 
 ## Velocity Features (Stripe/Visa Production Pattern)
 
-Redis sorted sets maintain sliding windows per entity:
+Sliding window velocity features computed per entity:
 - `vel_card_1min_count`: transactions on this card in last 1 minute
 - `vel_device_1hr_amt_sum`: total spend on this device in last hour
 - `vel_ip_prefix_24hr_count`: transactions from this IP prefix in last 24 hours
 
-Training-serving consistency: offline computation uses identical time windows as the Redis-based online store, solving the **training-serving skew problem** documented by Stripe's Shepherd platform.
+**Implementation:** Velocity features are computed offline (batch) using `src/velocity/feature_store.py`, which implements the Redis sorted-set data structure in Python. The time window logic is identical to what a Redis-backed online store would use — solving the **training-serving skew problem** documented by Stripe's Shepherd/Chronon platform.
+
+**Production extension:** In a live deployment at Stripe/Visa scale, the velocity store would be fed by a Kafka consumer reading the transaction event stream, maintaining per-entity sliding windows in Redis sorted sets at ~50,000 TPS. The offline implementation here uses the same window definitions and feature names — only the ingestion layer (Kafka consumer → Redis writes) would need to be added to make this production-ready.
 
 ## Entity Graph + GraphSAGE
 
@@ -99,7 +101,7 @@ Trains a 2-layer GraphSAGE (PyTorch Geometric) to generate 64-dim fraud risk emb
 | This Project | Production System |
 |---|---|
 | GraphSAGE on entity graph | Uber RGCN, PayPal HGNN, Airbnb payment network GNN |
-| Redis sliding-window velocity | Stripe/Visa real-time feature store |
+| Redis-pattern sliding-window velocity | Stripe/Visa real-time feature store |
 | Similarity learning + connected components | Stripe fraud ring detection |
 | FP-Growth auto-rule generation | Uber RADAR Protect |
 | 3-layer decision architecture | Universal: Stripe, Uber, PayPal, Visa |
@@ -167,7 +169,7 @@ Fraud-Detection-System/
 
 - Built a 3-layer fraud detection system (rules engine → XGBoost + ONNX → review queue) mirroring the production architecture at Stripe, Uber, and PayPal, achieving AUC-ROC 0.997, Precision@0.5% of 0.84, and 93% dollar capture rate on 1.85M transactions
 - Implemented entity graph (card↔device↔IP↔merchant) with GraphSAGE (PyTorch Geometric) for 64-dim fraud risk embeddings, replicating the graph neural network approach published by Uber (RGCN) and PayPal (HGNN)
-- Built Redis sliding-window velocity features (1min/10min/1hr/6hr/24hr per entity) with training-serving consistency — solving the training-serving skew problem documented by Stripe's Shepherd/Chronon platform
+- Implemented Redis-pattern sliding-window velocity features (1min/10min/1hr/6hr/24hr per entity) with training-serving consistency — the same window definitions used offline and online, solving the training-serving skew problem documented by Stripe's Shepherd/Chronon platform
 - Replicated Stripe's fraud ring detection: pairwise XGBoost similarity model on card pairs + NetworkX connected components for fraud ring identification
 - Implemented Uber RADAR Protect's FP-Growth auto-rule mining on confirmed fraud transactions, generating 401 candidate blocking rules with confidence and lift metrics for analyst review
 - Evaluated on production metrics (Precision@K, Recall@0.1%FPR, dollar value captured, temporal concept drift) — not just AUC — matching how production fraud teams actually measure model effectiveness
