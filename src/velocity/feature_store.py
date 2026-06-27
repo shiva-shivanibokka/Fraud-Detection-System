@@ -23,10 +23,8 @@ Training-serving consistency:
   — the training-serving skew problem documented by Stripe's Shepherd platform.
 """
 
-import os
 import time
-import json
-from typing import Optional
+
 import numpy as np
 import pandas as pd
 
@@ -36,6 +34,8 @@ try:
     REDIS_AVAILABLE = True
 except ImportError:
     REDIS_AVAILABLE = False
+
+from src.config import settings
 
 # Window sizes in seconds (matching production velocity feature windows)
 WINDOWS = {
@@ -56,16 +56,20 @@ class VelocityFeatureStore:
     Falls back to an in-memory dict store if Redis is unavailable.
     """
 
-    def __init__(self, host: str = "localhost", port: int = 6379, db: int = 1):
+    def __init__(self, redis_url: str | None = None):
         self.use_redis = False
         self.fallback_store: dict = {}  # entity_key -> list of (timestamp, amount)
 
+        url = redis_url or settings.redis_url
         if REDIS_AVAILABLE:
             try:
-                self.redis = redis.Redis(
-                    host=host,
-                    port=port,
-                    db=db,
+                # Redis connection is environment-driven:
+                # - Local dev: REDIS_URL=redis://localhost:6379 (plain TCP)
+                # - Upstash (prod): REDIS_URL=rediss://...upstash.io:6380 (TLS, same redis-py API)
+                # redis.from_url() handles both transparently.
+                self.redis = redis.from_url(
+                    url,
+                    db=1,
                     decode_responses=True,
                     socket_connect_timeout=2,
                 )
@@ -168,12 +172,8 @@ class VelocityFeatureStore:
                     ]
                     features[f"vel_{etype}_{wname}_count"] = len(records)
                     amts = [r[1] for r in records]
-                    features[f"vel_{etype}_{wname}_amt_sum"] = (
-                        sum(amts) if amts else 0.0
-                    )
-                    features[f"vel_{etype}_{wname}_amt_max"] = (
-                        max(amts) if amts else 0.0
-                    )
+                    features[f"vel_{etype}_{wname}_amt_sum"] = sum(amts) if amts else 0.0
+                    features[f"vel_{etype}_{wname}_amt_max"] = max(amts) if amts else 0.0
 
         return features
 
@@ -221,7 +221,6 @@ def compute_velocity_features_offline(
     df["_ts"] = df["trans_dt"].astype(np.int64) // 10**9  # UNIX seconds
 
     print("[velocity] Computing offline velocity features...")
-    feature_dfs = []
 
     for etype, col in entity_cols.items():
         print(f"  [velocity] Entity: {etype} ({col})")
@@ -278,7 +277,7 @@ def get_velocity_feature_names() -> list[str]:
 
 if __name__ == "__main__":
     # Quick test with in-memory store
-    store = VelocityFeatureStore(host="localhost", port=6379)
+    store = VelocityFeatureStore()
     now = time.time()
 
     # Simulate 5 transactions from same card in last hour

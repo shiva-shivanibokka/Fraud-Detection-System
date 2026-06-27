@@ -21,10 +21,10 @@ Temporal split:
 """
 
 import os
+import warnings
+
 import numpy as np
 import pandas as pd
-from datetime import datetime
-import warnings
 
 warnings.filterwarnings("ignore")
 
@@ -74,7 +74,6 @@ def synthesize_entity_fields(df: pd.DataFrame, seed: int = 42) -> pd.DataFrame:
       - IP prefixes are shared within geographic areas (city_pop-based)
     """
     rng = np.random.default_rng(seed)
-    n = len(df)
     cards = df["cc_num"].unique()
     merchants = df["merchant"].unique()
 
@@ -91,9 +90,7 @@ def synthesize_entity_fields(df: pd.DataFrame, seed: int = 42) -> pd.DataFrame:
 
     # Fraud rings: groups of 4-8 fraud cards sharing the same device
     n_fraud_rings = max(1, len(fraud_cards) // 5)
-    ring_devices = rng.choice(
-        device_pool[: n_devices // 3], size=n_fraud_rings, replace=False
-    )
+    ring_devices = rng.choice(device_pool[: n_devices // 3], size=n_fraud_rings, replace=False)
 
     for i, card in enumerate(fraud_cards):
         ring_idx = i % n_fraud_rings
@@ -131,9 +128,6 @@ def synthesize_entity_fields(df: pd.DataFrame, seed: int = 42) -> pd.DataFrame:
     unique_geos = geo_key.unique()
     geo_to_prefix = {g: f"10.{i // 256}.{i % 256}" for i, g in enumerate(unique_geos)}
 
-    prefixes = geo_key.map(geo_to_prefix)
-    last_octets = rng.integers(1, 254, size=n)
-
     # Fraud rings share the same /24 prefix (same VPN/proxy)
     card_to_prefix = {}
     for i, card in enumerate(fraud_cards):
@@ -145,16 +139,13 @@ def synthesize_entity_fields(df: pd.DataFrame, seed: int = 42) -> pd.DataFrame:
         if row["cc_num"] in card_to_prefix:
             prefix = card_to_prefix[row["cc_num"]]
         else:
-            prefix = geo_to_prefix.get(
-                f"{int(row['lat'] // 2)}_{int(row['long'] // 2)}", "10.0.0"
-            )
+            prefix = geo_to_prefix.get(f"{int(row['lat'] // 2)}_{int(row['long'] // 2)}", "10.0.0")
         return f"{prefix}.{rng.integers(1, 254)}"
 
     df["ip_address"] = df.apply(get_ip, axis=1)
     df["ip_prefix"] = df["ip_address"].str.rsplit(".", n=1).str[0]
 
     # --- Merchant device assignment (merchants use POS terminals = devices) ---
-    n_merchant_devices = max(50, len(merchants))
     merchant_devices = {m: f"pos_{i:05d}" for i, m in enumerate(merchants)}
     df["merchant_device"] = df["merchant"].map(merchant_devices)
 
@@ -181,10 +172,7 @@ def engineer_temporal_features(df: pd.DataFrame) -> pd.DataFrame:
 
     # Geographic distance between cardholder and merchant
     df["geo_distance_km"] = (
-        np.sqrt(
-            (df["lat"] - df["merch_lat"]) ** 2 + (df["long"] - df["merch_long"]) ** 2
-        )
-        * 111.0
+        np.sqrt((df["lat"] - df["merch_lat"]) ** 2 + (df["long"] - df["merch_long"]) ** 2) * 111.0
     )  # approx km per degree
 
     return df
@@ -216,10 +204,7 @@ def temporal_train_test_split(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFr
     split_date = pd.Timestamp("2020-01-01")
     train = df[df["trans_dt"] < split_date].copy()
     test = df[df["trans_dt"] >= split_date].copy()
-    print(
-        f"[data] Train: {len(train):,} | Test: {len(test):,} "
-        f"| Split date: {split_date.date()}"
-    )
+    print(f"[data] Train: {len(train):,} | Test: {len(test):,} | Split date: {split_date.date()}")
     print(
         f"[data] Train fraud rate: {train.is_fraud.mean():.4f} | "
         f"Test fraud rate: {test.is_fraud.mean():.4f}"
