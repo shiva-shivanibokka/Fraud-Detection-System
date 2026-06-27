@@ -23,12 +23,12 @@ Why GraphSAGE over standard GCN?
 """
 
 import os
+import warnings
+
+import joblib
+import networkx as nx
 import numpy as np
 import pandas as pd
-import networkx as nx
-import joblib
-import warnings
-from collections import defaultdict
 
 warnings.filterwarnings("ignore")
 
@@ -36,19 +36,14 @@ MODELS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "models")
 PROCESSED_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data", "processed")
 
 try:
-    import torch
     import torch.nn as nn
     import torch.nn.functional as F
-    from torch_geometric.data import HeteroData
-    from torch_geometric.nn import SAGEConv, to_hetero
-    from torch_geometric.utils import from_networkx
+    from torch_geometric.nn import SAGEConv
 
     TORCH_GEOMETRIC_AVAILABLE = True
 except ImportError:
     TORCH_GEOMETRIC_AVAILABLE = False
-    print(
-        "[graph] PyTorch Geometric not available — using NetworkX graph features only"
-    )
+    print("[graph] PyTorch Geometric not available — using NetworkX graph features only")
 
 
 # ---------------------------------------------------------------------------
@@ -206,10 +201,7 @@ def build_entity_graph(df: pd.DataFrame) -> nx.Graph:
         if G.has_node(cn) and G.has_node(mn):
             G.add_edge(cn, mn, edge_type="card_merchant")
 
-    print(
-        f"[graph] Entity graph: {G.number_of_nodes():,} nodes, "
-        f"{G.number_of_edges():,} edges"
-    )
+    print(f"[graph] Entity graph: {G.number_of_nodes():,} nodes, {G.number_of_edges():,} edges")
     return G
 
 
@@ -281,9 +273,7 @@ def compute_graph_features(G: nx.Graph, df: pd.DataFrame) -> pd.DataFrame:
             "graph_n_devices": len(devices),
             "graph_n_ips": len(ips),
             "graph_n_merchants": len(merchants),
-            "graph_device_fraud_rate": np.mean(dev_fraud_rates)
-            if dev_fraud_rates
-            else 0.0,
+            "graph_device_fraud_rate": np.mean(dev_fraud_rates) if dev_fraud_rates else 0.0,
             "graph_ip_fraud_rate": np.mean(ip_fraud_rates) if ip_fraud_rates else 0.0,
             "graph_shared_device_cards": shared_device_cards,
             "graph_shared_ip_cards": shared_ip_cards,
@@ -396,22 +386,15 @@ def train_graphsage(
     y = torch.tensor(labels, dtype=torch.float32).to(device)
     card_mask_t = torch.tensor(card_mask, dtype=torch.bool).to(device)
 
-    model = GraphSAGEFraud(in_channels=6, hidden=hidden, out_channels=embed_dim).to(
-        device
-    )
+    model = GraphSAGEFraud(in_channels=6, hidden=hidden, out_channels=embed_dim).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=5e-4)
 
     # Class weight for imbalanced fraud labels
     fraud_count = card_mask.sum() and (labels[card_mask] == 1).sum()
     legit_count = card_mask.sum() and (labels[card_mask] == 0).sum()
-    pos_weight = torch.tensor(
-        [legit_count / max(fraud_count, 1)], dtype=torch.float32
-    ).to(device)
+    pos_weight = torch.tensor([legit_count / max(fraud_count, 1)], dtype=torch.float32).to(device)
 
-    print(
-        f"[graph] Training GraphSAGE: {n_nodes} nodes, "
-        f"{len(edges)} edges, {epochs} epochs..."
-    )
+    print(f"[graph] Training GraphSAGE: {n_nodes} nodes, {len(edges)} edges, {epochs} epochs...")
 
     model.train()
     for epoch in range(epochs):
@@ -449,10 +432,7 @@ def train_graphsage(
             card_id = node[len("card_") :]
             card_embeddings[card_id] = embeddings_np[i]
 
-    print(
-        f"[graph] Generated embeddings for {len(card_embeddings)} cards "
-        f"(shape: {embed_dim}d)"
-    )
+    print(f"[graph] Generated embeddings for {len(card_embeddings)} cards (shape: {embed_dim}d)")
 
     # Save model + embeddings
     os.makedirs(MODELS_DIR, exist_ok=True)
@@ -479,9 +459,7 @@ def attach_gnn_embeddings(
         return df
 
     zero_embed = np.zeros(embed_dim)
-    embed_matrix = np.array(
-        [card_embeddings.get(str(cc), zero_embed) for cc in df["cc_num"]]
-    )
+    embed_matrix = np.array([card_embeddings.get(str(cc), zero_embed) for cc in df["cc_num"]])
 
     for i in range(embed_dim):
         df[f"gnn_embed_{i}"] = embed_matrix[:, i]
