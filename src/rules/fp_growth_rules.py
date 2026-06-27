@@ -52,7 +52,6 @@ from __future__ import annotations
 import json
 import logging
 import math
-import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
@@ -115,10 +114,7 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     dphi = math.radians(lat2 - lat1)
     dlambda = math.radians(lon2 - lon1)
 
-    a = (
-        math.sin(dphi / 2) ** 2
-        + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
-    )
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
     return 2 * _EARTH_RADIUS_KM * math.asin(math.sqrt(a))
 
 
@@ -246,12 +242,8 @@ def discretize_for_fpgrowth(
     # ------------------------------------------------------------------
     if "state" in target_df.columns:
         # Determine top states from fraud data if available
-        fraud_states: pd.Series = (
-            fraud_df["state"] if fraud_df is not None else full_df["state"]
-        )
-        top_states: Set[str] = set(
-            fraud_states.value_counts().head(top_n_states).index.tolist()
-        )
+        fraud_states: pd.Series = fraud_df["state"] if fraud_df is not None else full_df["state"]
+        top_states: Set[str] = set(fraud_states.value_counts().head(top_n_states).index.tolist())
 
         def _state_item(s: Any) -> Optional[str]:
             if pd.isna(s):
@@ -271,9 +263,7 @@ def discretize_for_fpgrowth(
     if geo_cols.issubset(target_df.columns):
 
         def _geo_bucket(row: pd.Series) -> Optional[str]:
-            d = _haversine_km(
-                row["lat"], row["long"], row["merch_lat"], row["merch_long"]
-            )
+            d = _haversine_km(row["lat"], row["long"], row["merch_lat"], row["merch_long"])
             if math.isnan(d):
                 return None
             return "geo_far" if d >= GEO_FAR_KM else "geo_near"
@@ -376,9 +366,7 @@ def mine_fraud_rules(
     log.info("One-hot shape: %s (%d items)", onehot.shape, onehot.shape[1])
 
     log.info("Running FP-Growth (min_support=%.4f) …", min_support)
-    itemsets = fpgrowth(
-        onehot, min_support=min_support, use_colnames=True, max_len=None
-    )
+    itemsets = fpgrowth(onehot, min_support=min_support, use_colnames=True, max_len=None)
     log.info("Found %d frequent itemsets.", len(itemsets))
 
     if itemsets.empty:
@@ -395,9 +383,7 @@ def mine_fraud_rules(
             num_itemsets=len(onehot),
         )
     except TypeError:
-        rules = association_rules(
-            itemsets, metric="confidence", min_threshold=min_confidence
-        )
+        rules = association_rules(itemsets, metric="confidence", min_threshold=min_confidence)
     log.info("Generated %d raw rules.", len(rules))
 
     if rules.empty:
@@ -409,9 +395,7 @@ def mine_fraud_rules(
     # Filter: consequent must contain FRAUD
     fraud_rules = rules[rules["consequents"].apply(lambda x: "FRAUD" in x)].copy()
     if fraud_rules.empty:
-        log.warning(
-            "No rules with FRAUD as consequent. Returning top rules by lift instead."
-        )
+        log.warning("No rules with FRAUD as consequent. Returning top rules by lift instead.")
         fraud_rules = rules.copy()
 
     fraud_rules = fraud_rules[fraud_rules["lift"] >= min_lift].copy()
@@ -553,9 +537,7 @@ def score_transaction_against_rules(
     disc = discretize_for_fpgrowth(single_df, fraud_df=None)
 
     # Build the item set for this transaction
-    txn_items: Set[str] = {
-        str(v) for v in disc.iloc[0].values if v is not None and str(v) != "nan"
-    }
+    txn_items: Set[str] = {str(v) for v in disc.iloc[0].values if v is not None and str(v) != "nan"}
 
     triggered: List[pd.Series] = []
     for _, rule in rules_df.iterrows():

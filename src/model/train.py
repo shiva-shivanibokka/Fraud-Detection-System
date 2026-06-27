@@ -32,6 +32,7 @@ Features used:
 
 import os
 import sys
+
 import numpy as np
 import pandas as pd
 import xgboost as xgb
@@ -42,23 +43,17 @@ try:
     SHAP_AVAILABLE = True
 except (ImportError, Exception):
     SHAP_AVAILABLE = False
-    print(
-        "[model] SHAP unavailable (NumPy version conflict) — using XGBoost native importance"
-    )
+    print("[model] SHAP unavailable (NumPy version conflict) — using XGBoost native importance")
+import warnings
+
+import joblib
 import mlflow
 import mlflow.xgboost
-import joblib
-import json
-import warnings
-from sklearn.metrics import (
-    roc_auc_score,
-    average_precision_score,
-    precision_score,
-    recall_score,
-    f1_score,
-    confusion_matrix,
-)
 from sklearn.calibration import CalibratedClassifierCV
+from sklearn.metrics import (
+    average_precision_score,
+    roc_auc_score,
+)
 
 warnings.filterwarnings("ignore")
 
@@ -111,9 +106,7 @@ GNN_EMBED_DIM = 64
 
 def get_feature_cols(df: pd.DataFrame) -> list[str]:
     """Return all feature columns available in df."""
-    vel_cols = [
-        c for c in df.columns if any(c.startswith(p) for p in VELOCITY_FEATURE_PREFIXES)
-    ]
+    vel_cols = [c for c in df.columns if any(c.startswith(p) for p in VELOCITY_FEATURE_PREFIXES)]
     graph_cols = [c for c in GRAPH_FEATURES if c in df.columns]
     gnn_cols = [c for c in df.columns if c.startswith("gnn_embed_")]
     tab_cols = [c for c in TABULAR_FEATURES if c in df.columns]
@@ -149,9 +142,7 @@ def get_xgb_params(n_pos: int, n_neg: int) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def precision_at_k(
-    y_true: np.ndarray, y_scores: np.ndarray, k_frac: float = 0.01
-) -> float:
+def precision_at_k(y_true: np.ndarray, y_scores: np.ndarray, k_frac: float = 0.01) -> float:
     """
     Precision@K: of the top K% highest-scored transactions (what gets reviewed),
     what fraction are actually fraud?
@@ -166,9 +157,7 @@ def precision_at_k(
     return y_true[top_k_idx].mean()
 
 
-def recall_at_fpr(
-    y_true: np.ndarray, y_scores: np.ndarray, target_fpr: float = 0.001
-) -> float:
+def recall_at_fpr(y_true: np.ndarray, y_scores: np.ndarray, target_fpr: float = 0.001) -> float:
     """
     Recall at fixed False Positive Rate.
     Finds the threshold that produces target_fpr, returns recall at that threshold.
@@ -272,9 +261,7 @@ def train_fraud_model(
 
     n_pos = y_train.sum()
     n_neg = len(y_train) - n_pos
-    print(
-        f"[model] Train: {len(y_train):,} | Fraud: {n_pos:,} ({n_pos / len(y_train):.4f})"
-    )
+    print(f"[model] Train: {len(y_train):,} | Fraud: {n_pos:,} ({n_pos / len(y_train):.4f})")
 
     mlflow.set_experiment(experiment_name)
 
@@ -316,7 +303,7 @@ def train_fraud_model(
         rec_01fpr = recall_at_fpr(y_test, scores_test, target_fpr=0.001)
         dollar_metrics = dollar_value_captured(y_test, scores_test, amounts_test)
 
-        print(f"\n[model] === Evaluation Results ===")
+        print("\n[model] === Evaluation Results ===")
         print(f"  AUC-ROC:              {auc:.4f}")
         print(f"  AUC-PR:               {ap:.4f}")
         print(f"  Precision@1%:         {p_at_1:.4f}  (top 1% of flagged txns)")
@@ -342,9 +329,7 @@ def train_fraud_model(
             drift_path = os.path.join(MODELS_DIR, "drift_by_month.json")
             drift_df.to_json(drift_path, orient="records", indent=2)
             mlflow.log_artifact(drift_path)
-            print(
-                drift_df[["month", "auc", "precision_at_1pct"]].to_string(index=False)
-            )
+            print(drift_df[["month", "auc", "precision_at_1pct"]].to_string(index=False))
 
         # Feature importance — SHAP if available, XGBoost gain as fallback
         print("[model] Computing feature importance...")
@@ -361,10 +346,7 @@ def train_fraud_model(
                     np.abs(shap_vals.values).mean(axis=0), index=feature_cols
                 ).sort_values(ascending=False)
             except Exception as e:
-                print(
-                    f"[model] SHAP failed ({e}), falling back to XGBoost gain importance"
-                )
-                SHAP_AVAILABLE_NOW = False
+                print(f"[model] SHAP failed ({e}), falling back to XGBoost gain importance")
                 mean_abs_shap = None
         else:
             mean_abs_shap = None
@@ -413,9 +395,7 @@ def train_fraud_model(
     }
 
 
-def export_to_onnx(
-    clf: xgb.XGBClassifier, feature_cols: list, X_sample: np.ndarray
-) -> str:
+def export_to_onnx(clf: xgb.XGBClassifier, feature_cols: list, X_sample: np.ndarray) -> str:
     """
     Export XGBoost model to ONNX format for sub-5ms inference.
     ONNX Runtime is 3-5x faster than native XGBoost for batch=1 inference.
@@ -423,7 +403,6 @@ def export_to_onnx(
     try:
         from skl2onnx import convert_sklearn
         from skl2onnx.common.data_types import FloatTensorType
-        import onnx
 
         initial_type = [("float_input", FloatTensorType([None, len(feature_cols)]))]
         onnx_model = convert_sklearn(
@@ -439,15 +418,12 @@ def export_to_onnx(
     except ImportError:
         print("[model] skl2onnx not installed — trying onnxmltools...")
         try:
-            import onnxmltools
             from onnxmltools.convert import convert_xgboost
             from onnxmltools.convert.common.data_types import FloatTensorType
 
             onnx_model = convert_xgboost(
                 clf.get_booster(),
-                initial_types=[
-                    ("features", FloatTensorType([None, len(feature_cols)]))
-                ],
+                initial_types=[("features", FloatTensorType([None, len(feature_cols)]))],
             )
             onnx_path = os.path.join(MODELS_DIR, "fraud_model.onnx")
             with open(onnx_path, "wb") as f:
@@ -493,9 +469,7 @@ def predict_onnx(sess, input_name, X: np.ndarray) -> np.ndarray:
 if __name__ == "__main__":
     sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-    PROCESSED_DIR_ABS = os.path.join(
-        os.path.dirname(__file__), "..", "..", "data", "processed"
-    )
+    PROCESSED_DIR_ABS = os.path.join(os.path.dirname(__file__), "..", "..", "data", "processed")
     train_path = os.path.join(PROCESSED_DIR_ABS, "train_features.parquet")
     test_path = os.path.join(PROCESSED_DIR_ABS, "test_features.parquet")
 

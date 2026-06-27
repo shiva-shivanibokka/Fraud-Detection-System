@@ -23,10 +23,8 @@ Training-serving consistency:
   — the training-serving skew problem documented by Stripe's Shepherd platform.
 """
 
-import os
 import time
-import json
-from typing import Optional
+
 import numpy as np
 import pandas as pd
 
@@ -170,12 +168,8 @@ class VelocityFeatureStore:
                     ]
                     features[f"vel_{etype}_{wname}_count"] = len(records)
                     amts = [r[1] for r in records]
-                    features[f"vel_{etype}_{wname}_amt_sum"] = (
-                        sum(amts) if amts else 0.0
-                    )
-                    features[f"vel_{etype}_{wname}_amt_max"] = (
-                        max(amts) if amts else 0.0
-                    )
+                    features[f"vel_{etype}_{wname}_amt_sum"] = sum(amts) if amts else 0.0
+                    features[f"vel_{etype}_{wname}_amt_max"] = max(amts) if amts else 0.0
 
         return features
 
@@ -223,7 +217,6 @@ def compute_velocity_features_offline(
     df["_ts"] = df["trans_dt"].astype(np.int64) // 10**9  # UNIX seconds
 
     print("[velocity] Computing offline velocity features...")
-    feature_dfs = []
 
     for etype, col in entity_cols.items():
         print(f"  [velocity] Entity: {etype} ({col})")

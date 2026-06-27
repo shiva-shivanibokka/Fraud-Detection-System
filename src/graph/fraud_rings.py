@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import itertools
 import logging
-import os
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -47,7 +46,6 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import classification_report, roc_auc_score
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
 from xgboost import XGBClassifier
 
 # ---------------------------------------------------------------------------
@@ -113,9 +111,7 @@ def _build_card_profiles(df: pd.DataFrame) -> pd.DataFrame:
         raise ValueError(f"Missing required columns: {missing}")
 
     df = df.copy()
-    df["trans_date_trans_time"] = pd.to_datetime(
-        df["trans_date_trans_time"], errors="coerce"
-    )
+    df["trans_date_trans_time"] = pd.to_datetime(df["trans_date_trans_time"], errors="coerce")
 
     profiles = (
         df.groupby("card_id")
@@ -123,11 +119,7 @@ def _build_card_profiles(df: pd.DataFrame) -> pd.DataFrame:
             devices=("device_id", lambda x: set(x.dropna())),
             ip_prefixes=(
                 "ip_address",
-                lambda x: {
-                    ".".join(str(ip).split(".")[:3])
-                    for ip in x.dropna()
-                    if "." in str(ip)
-                },
+                lambda x: {".".join(str(ip).split(".")[:3]) for ip in x.dropna() if "." in str(ip)},
             ),
             state=("state", lambda x: x.mode().iloc[0] if len(x) > 0 else "UNK"),
             merchants=("merchant", lambda x: set(x.dropna())),
@@ -265,7 +257,6 @@ def generate_training_pairs(
     log.info("Built %d card profiles.", len(profiles))
 
     fraud_cards = profiles[profiles["fraud_flag"] == 1].set_index("card_id")
-    legit_cards = profiles[profiles["fraud_flag"] == 0].set_index("card_id")
 
     records: List[Dict] = []
 
@@ -282,9 +273,7 @@ def generate_training_pairs(
             candidate_positives.append((a, b))
 
     if len(candidate_positives) > max_positive_pairs:
-        idx = rng.choice(
-            len(candidate_positives), size=max_positive_pairs, replace=False
-        )
+        idx = rng.choice(len(candidate_positives), size=max_positive_pairs, replace=False)
         candidate_positives = [candidate_positives[i] for i in idx]
 
     for a, b in candidate_positives:
@@ -319,9 +308,7 @@ def generate_training_pairs(
             candidate_negatives.append((a, b, fa, fb))
 
     if len(candidate_negatives) > max_negative_pairs:
-        idx = rng.choice(
-            len(candidate_negatives), size=max_negative_pairs, replace=False
-        )
+        idx = rng.choice(len(candidate_negatives), size=max_negative_pairs, replace=False)
         candidate_negatives = [candidate_negatives[i] for i in idx]
 
     profiles_idx = profiles.set_index("card_id")
@@ -427,9 +414,7 @@ def train_similarity_model(
     y_prob = model.predict_proba(X_test)[:, 1]
     y_pred = (y_prob >= 0.5).astype(int)
     auc = roc_auc_score(y_test, y_prob)
-    report = classification_report(
-        y_test, y_pred, target_names=["different_ring", "same_ring"]
-    )
+    report = classification_report(y_test, y_pred, target_names=["different_ring", "same_ring"])
     log.info("Test ROC-AUC: %.4f", auc)
     log.info("Classification report:\n%s", report)
 
@@ -500,9 +485,7 @@ def detect_fraud_rings(
     fraud_ids = fraud_profiles.index.tolist()
     for a, b in itertools.combinations(fraud_ids, 2):
         ra, rb = fraud_profiles.loc[a], fraud_profiles.loc[b]
-        if not (
-            (ra["devices"] & rb["devices"]) or (ra["ip_prefixes"] & rb["ip_prefixes"])
-        ):
+        if not ((ra["devices"] & rb["devices"]) or (ra["ip_prefixes"] & rb["ip_prefixes"])):
             continue
         feats = _compute_pair_features(ra, rb)
         pair_records.append(feats)
@@ -526,9 +509,7 @@ def detect_fraud_rings(
             threshold,
         )
     else:
-        log.warning(
-            "No candidate pairs found (no shared devices/IPs among fraud cards)."
-        )
+        log.warning("No candidate pairs found (no shared devices/IPs among fraud cards).")
 
     # Connected components → ring IDs
     card_to_ring: Dict[str, str] = {}
@@ -540,9 +521,7 @@ def detect_fraud_rings(
                 card_to_ring[card] = ring_label
             ring_counter += 1
 
-    log.info(
-        "Identified %d fraud rings (min_size=%d).", ring_counter - 1, min_ring_size
-    )
+    log.info("Identified %d fraud rings (min_size=%d).", ring_counter - 1, min_ring_size)
 
     # Merge back onto card profiles
     profiles["ring_id"] = profiles["card_id"].map(card_to_ring).fillna("NO_RING")
@@ -591,9 +570,7 @@ def get_ring_stats(df: pd.DataFrame) -> pd.DataFrame:
         - ``span_days``     : days between first and last transaction
     """
     if "ring_id" not in df.columns:
-        raise ValueError(
-            "DataFrame must have a 'ring_id' column. Run detect_fraud_rings first."
-        )
+        raise ValueError("DataFrame must have a 'ring_id' column. Run detect_fraud_rings first.")
 
     ring_df = df[df["ring_id"] != "NO_RING"].copy()
     if ring_df.empty:
@@ -620,9 +597,7 @@ def get_ring_stats(df: pd.DataFrame) -> pd.DataFrame:
         .reset_index()
     )
 
-    stats["span_days"] = (
-        (stats["last_txn"] - stats["first_txn"]).dt.days.fillna(0).astype(int)
-    )
+    stats["span_days"] = (stats["last_txn"] - stats["first_txn"]).dt.days.fillna(0).astype(int)
     stats = stats.sort_values("total_amt", ascending=False).reset_index(drop=True)
     return stats
 
@@ -783,9 +758,7 @@ if __name__ == "__main__":
 
     # --- Step 1: generate training pairs ---
     log.info("--- Step 1: Generating training pairs ---")
-    pairs = generate_training_pairs(
-        df, max_positive_pairs=2_000, max_negative_pairs=2_000
-    )
+    pairs = generate_training_pairs(df, max_positive_pairs=2_000, max_negative_pairs=2_000)
     log.info(
         "Pairs shape: %s  label distribution:\n%s",
         pairs.shape,
@@ -793,9 +766,7 @@ if __name__ == "__main__":
     )
 
     if pairs["label"].sum() == 0:
-        log.error(
-            "No positive pairs generated — check fraud card device-sharing logic."
-        )
+        log.error("No positive pairs generated — check fraud card device-sharing logic.")
         sys.exit(1)
 
     # --- Step 2: train model ---

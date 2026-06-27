@@ -5,12 +5,11 @@ Layer 2: ML model scoring   (<20ms) via ONNX / joblib fallback
 Layer 3: SHAP explanation generation
 """
 
+import collections
 import json
 import os
-import sys
 import time
 import uuid
-import collections
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -28,9 +27,7 @@ try:
 except ImportError:
     import logging
 
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     logger = logging.getLogger("fraud_api")
 
 # ---------------------------------------------------------------------------
@@ -47,9 +44,7 @@ class InMemoryVelocityStore:
     """Sliding-window counter backed by a deque per key."""
 
     def __init__(self):
-        self._store: dict[str, collections.deque] = collections.defaultdict(
-            collections.deque
-        )
+        self._store: dict[str, collections.deque] = collections.defaultdict(collections.deque)
 
     def incr_window(self, key: str, window_seconds: int, ts: float) -> int:
         dq = self._store[key]
@@ -81,9 +76,7 @@ class VelocityFeatureStore:
         except Exception:
             logger.info("velocity_store", backend="in_memory")
 
-    def record_and_count(
-        self, cc_num: str, ip_prefix: str, ts: float
-    ) -> dict[str, int]:
+    def record_and_count(self, cc_num: str, ip_prefix: str, ts: float) -> dict[str, int]:
         if self._use_redis:
             pipe = self.redis.pipeline()
             for key, ttl in [
@@ -148,9 +141,7 @@ async def lifespan(app: FastAPI):
         import onnxruntime as ort
 
         onnx_path = os.path.join(MODELS_DIR, "fraud_model.onnx")
-        state.onnx_session = ort.InferenceSession(
-            onnx_path, providers=["CPUExecutionProvider"]
-        )
+        state.onnx_session = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
         state.onnx_available = True
         logger.info("model_loaded", backend="onnx")
     except Exception as exc:
@@ -158,9 +149,7 @@ async def lifespan(app: FastAPI):
         try:
             import joblib
 
-            state.joblib_model = joblib.load(
-                os.path.join(MODELS_DIR, "fraud_model.pkl")
-            )
+            state.joblib_model = joblib.load(os.path.join(MODELS_DIR, "fraud_model.pkl"))
             logger.info("model_loaded", backend="joblib")
         except Exception as exc2:
             logger.error("model_load_failed", error=str(exc2))
@@ -189,16 +178,12 @@ async def lifespan(app: FastAPI):
     try:
         import joblib
 
-        state.card_embeddings = (
-            joblib.load(os.path.join(MODELS_DIR, "card_embeddings.pkl")) or {}
-        )
+        state.card_embeddings = joblib.load(os.path.join(MODELS_DIR, "card_embeddings.pkl")) or {}
     except Exception:
         state.card_embeddings = {}
 
     # ---- Load FP-Growth rules ----
-    state.fraud_rules = _load_json(
-        os.path.join(MODELS_DIR, "fraud_rules.json"), default=[]
-    )
+    state.fraud_rules = _load_json(os.path.join(MODELS_DIR, "fraud_rules.json"), default=[])
 
     # ---- Build blocklist from ring stats ----
     ring_stats = _load_json(os.path.join(MODELS_DIR, "ring_stats.json"), default={})
@@ -216,7 +201,6 @@ async def lifespan(app: FastAPI):
 
         model = state.joblib_model
         if model is not None and hasattr(model, "predict_proba"):
-            bg = np.zeros((10, len(state.feature_cols)))
             state.shap_explainer = shap.TreeExplainer(model)
             logger.info("shap_explainer_ready")
     except Exception as exc:
@@ -344,7 +328,7 @@ def _match_rules(req: TransactionRequest) -> list[dict]:
         ante = rule.get("antecedent", [])
         hit = any(
             (item == f"category={req.category}")
-            or (item == f"hour=night" and req.is_night)
+            or (item == "hour=night" and req.is_night)
             or (item == f"merchant={req.merchant}")
             for item in ante
         )
@@ -363,11 +347,7 @@ def _shap_reasons(features: np.ndarray, vel: dict, score: float) -> list[str]:
             arr = shap_vals[1][0] if isinstance(shap_vals, list) else shap_vals[0]
             top_idx = np.argsort(np.abs(arr))[::-1][:5]
             for i in top_idx:
-                col = (
-                    state.feature_cols[i]
-                    if i < len(state.feature_cols)
-                    else f"feature_{i}"
-                )
+                col = state.feature_cols[i] if i < len(state.feature_cols) else f"feature_{i}"
                 val = features[0][i]
                 reasons.append(f"{col}={val:.2f} (SHAP impact: {arr[i]:+.3f})")
             return reasons
@@ -383,15 +363,11 @@ def _shap_reasons(features: np.ndarray, vel: dict, score: float) -> list[str]:
 
     vel_1min = vel.get("vel_card_1min", 0)
     if vel_1min > 2:
-        reasons.append(
-            f"High transaction velocity on this card (1-min count: {vel_1min})"
-        )
+        reasons.append(f"High transaction velocity on this card (1-min count: {vel_1min})")
     if fval("amt") > 1000:
         reasons.append(f"Unusually high transaction amount (${fval('amt'):.2f})")
     if fval("geo_distance_km") > 500:
-        reasons.append(
-            f"Large geographic distance ({fval('geo_distance_km'):.0f} km from home)"
-        )
+        reasons.append(f"Large geographic distance ({fval('geo_distance_km'):.0f} km from home)")
     if fval("is_night") == 1:
         reasons.append("Transaction occurred during nighttime hours")
     if fval("vel_ip_1min") > 3:
@@ -412,11 +388,7 @@ async def score_transaction(req: TransactionRequest, request: Request):
     ts = req.timestamp or time.time()
     trans_id = req.trans_id or trace_id
 
-    log = (
-        logger.bind(trace_id=trace_id, trans_id=trans_id)
-        if hasattr(logger, "bind")
-        else logger
-    )
+    log = logger.bind(trace_id=trace_id, trans_id=trans_id) if hasattr(logger, "bind") else logger
 
     # ---- Layer 1a: blocklist ----
     if req.cc_num in state.known_fraud_cards:
@@ -449,9 +421,7 @@ async def score_transaction(req: TransactionRequest, request: Request):
             decision="DECLINE",
             fraud_score=1.0,
             layer_triggered="rules",
-            reasons=[
-                f"Velocity limit exceeded: {vel['vel_card_1min']} txns in last 60s"
-            ],
+            reasons=[f"Velocity limit exceeded: {vel['vel_card_1min']} txns in last 60s"],
             latency_ms=round(elapsed, 2),
             model_latency_ms=0.0,
             triggered_rules=[],
@@ -500,8 +470,7 @@ async def score_transaction(req: TransactionRequest, request: Request):
 async def health():
     return {
         "status": "ok",
-        "model_loaded": state.onnx_session is not None
-        or state.joblib_model is not None,
+        "model_loaded": state.onnx_session is not None or state.joblib_model is not None,
         "onnx_available": state.onnx_available,
         "redis_available": state.redis_available,
         "blocklist_size": len(state.known_fraud_cards),
@@ -514,9 +483,7 @@ async def health():
 async def metrics():
     lat = list(state.latency_history)
     ml_lat = list(state.model_latency_history)
-    decline_rate = (
-        (state.decline_count / state.total_scored) if state.total_scored else 0.0
-    )
+    decline_rate = (state.decline_count / state.total_scored) if state.total_scored else 0.0
     return {
         "total_scored": state.total_scored,
         "decline_rate": round(decline_rate, 4),
@@ -532,9 +499,7 @@ async def metrics():
 
 @app.get("/fraud-rings")
 async def fraud_rings():
-    return _load_json(
-        os.path.join(MODELS_DIR, "ring_stats.json"), default={"rings": []}
-    )
+    return _load_json(os.path.join(MODELS_DIR, "ring_stats.json"), default={"rings": []})
 
 
 @app.get("/fraud-rules")
@@ -544,9 +509,7 @@ async def fraud_rules_endpoint():
 
 @app.get("/drift")
 async def drift():
-    return _load_json(
-        os.path.join(MODELS_DIR, "drift_by_month.json"), default={"months": []}
-    )
+    return _load_json(os.path.join(MODELS_DIR, "drift_by_month.json"), default={"months": []})
 
 
 @app.get("/entity-graph")
@@ -560,13 +523,9 @@ async def entity_graph():
 @app.get("/feature-importance")
 async def feature_importance():
     cols = state.feature_cols or []
-    if state.joblib_model is not None and hasattr(
-        state.joblib_model, "feature_importances_"
-    ):
+    if state.joblib_model is not None and hasattr(state.joblib_model, "feature_importances_"):
         imp = state.joblib_model.feature_importances_
-        return {
-            "features": [{"name": c, "importance": float(v)} for c, v in zip(cols, imp)]
-        }
+        return {"features": [{"name": c, "importance": float(v)} for c, v in zip(cols, imp)]}
     # Heuristic fallback
     defaults = {
         "amt": 0.28,
@@ -580,6 +539,4 @@ async def feature_importance():
         "is_night": 0.02,
         "is_weekend": 0.01,
     }
-    return {
-        "features": [{"name": c, "importance": defaults.get(c, 0.01)} for c in cols]
-    }
+    return {"features": [{"name": c, "importance": defaults.get(c, 0.01)} for c in cols]}
