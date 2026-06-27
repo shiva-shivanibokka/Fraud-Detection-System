@@ -37,6 +37,8 @@ try:
 except ImportError:
     REDIS_AVAILABLE = False
 
+from src.config import settings
+
 # Window sizes in seconds (matching production velocity feature windows)
 WINDOWS = {
     "1min": 60,
@@ -56,16 +58,16 @@ class VelocityFeatureStore:
     Falls back to an in-memory dict store if Redis is unavailable.
     """
 
-    def __init__(self, host: str = "localhost", port: int = 6379, db: int = 1):
+    def __init__(self, redis_url: str = None):
         self.use_redis = False
         self.fallback_store: dict = {}  # entity_key -> list of (timestamp, amount)
 
+        url = redis_url or settings.redis_url
         if REDIS_AVAILABLE:
             try:
-                self.redis = redis.Redis(
-                    host=host,
-                    port=port,
-                    db=db,
+                self.redis = redis.from_url(
+                    url,
+                    db=1,
                     decode_responses=True,
                     socket_connect_timeout=2,
                 )
@@ -278,7 +280,7 @@ def get_velocity_feature_names() -> list[str]:
 
 if __name__ == "__main__":
     # Quick test with in-memory store
-    store = VelocityFeatureStore(host="localhost", port=6379)
+    store = VelocityFeatureStore()
     now = time.time()
 
     # Simulate 5 transactions from same card in last hour

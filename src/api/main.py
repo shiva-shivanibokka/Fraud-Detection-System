@@ -19,6 +19,8 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from src.config import settings
+
 try:
     import structlog
 
@@ -35,7 +37,7 @@ except ImportError:
 # Paths
 # ---------------------------------------------------------------------------
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-MODELS_DIR = os.path.join(BASE_DIR, "models")
+MODELS_DIR = os.path.join(BASE_DIR, settings.model_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -71,7 +73,7 @@ class VelocityFeatureStore:
         try:
             import redis as _redis
 
-            r = _redis.Redis(host="localhost", port=6379, socket_connect_timeout=1)
+            r = _redis.from_url(settings.redis_url, socket_connect_timeout=1)
             r.ping()
             self.redis = r
             self._use_redis = True
@@ -236,7 +238,7 @@ app = FastAPI(title="Fraud Detection API", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -461,10 +463,10 @@ async def score_transaction(req: TransactionRequest, request: Request):
     state.model_latency_history.append(model_latency_ms)
 
     # ---- Threshold -> decision ----
-    if fraud_score >= 0.8:
+    if fraud_score >= settings.fraud_threshold_decline:
         decision = "DECLINE"
         state.decline_count += 1
-    elif fraud_score >= 0.4:
+    elif fraud_score >= settings.fraud_threshold_review:
         decision = "REVIEW"
     else:
         decision = "APPROVE"
