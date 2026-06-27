@@ -468,11 +468,24 @@ async def score_transaction(req: TransactionRequest, request: Request):
 
 @app.get("/health")
 async def health():
+    # Attempt a live Redis ping to report actual connectivity
+    redis_connected = False
+    if state.velocity_store is not None and state.velocity_store._use_redis:
+        try:
+            state.velocity_store.redis.ping()
+            redis_connected = True
+        except Exception:
+            redis_connected = False
+
+    redis_mode = "upstash" if "upstash.io" in settings.redis_url else "local"
+
     return {
         "status": "ok",
         "model_loaded": state.onnx_session is not None or state.joblib_model is not None,
         "onnx_available": state.onnx_available,
         "redis_available": state.redis_available,
+        "redis_connected": redis_connected,
+        "redis_mode": redis_mode,
         "blocklist_size": len(state.known_fraud_cards),
         "rules_loaded": len(state.fraud_rules),
         "feature_cols": len(state.feature_cols),
