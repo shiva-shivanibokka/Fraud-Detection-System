@@ -58,7 +58,7 @@ class VelocityFeatureStore:
     Falls back to an in-memory dict store if Redis is unavailable.
     """
 
-    def __init__(self, redis_url: str = None):
+    def __init__(self, redis_url: str | None = None):
         self.use_redis = False
         self.fallback_store: dict = {}  # entity_key -> list of (timestamp, amount)
 
