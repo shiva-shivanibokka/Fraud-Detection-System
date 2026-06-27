@@ -1,0 +1,10 @@
+data/raw/
+data/processed/
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.env
+frontend/node_modules/
+mlruns/
+.superpowers/
