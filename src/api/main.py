@@ -7,6 +7,7 @@ Layer 3: SHAP explanation generation
 
 import collections
 import json
+import math
 import os
 import time
 import uuid
@@ -61,10 +62,26 @@ class AppState:
 state = AppState()
 
 
+def _json_safe(obj: Any) -> Any:
+    """Recursively replace non-finite floats (NaN/Inf) with None.
+
+    Model JSON files (e.g. fraud_rules.json) can contain NaN values, which
+    Python's json writes but Starlette's response encoder (allow_nan=False)
+    rejects with a 500. Sanitizing on load keeps every endpoint serializable.
+    """
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_json_safe(v) for v in obj]
+    return obj
+
+
 def _load_json(path: str, default: Any = None) -> Any:
     try:
         with open(path, "r") as f:
-            return json.load(f)
+            return _json_safe(json.load(f))
     except Exception as exc:
         logger.warning("json_load_failed", path=path, error=str(exc))
         return default if default is not None else {}
