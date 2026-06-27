@@ -28,11 +28,12 @@ services:
       - key: HF_REPO_ID
         value: "shiva-1993/fraud-detection-model"
 
+      # Allowed browser origins (JSON array). Includes local dev + the live
+      # Vercel frontend. No trailing slash — must match the browser Origin header.
+      - key: CORS_ORIGINS
+        value: '["http://localhost:5173","https://fraud-detection-system-ebon.vercel.app"]'
+
       # --- Optional, set later in the Render dashboard ---
-      # Allow the deployed frontend origin once Vercel is live:
-      # - key: CORS_ORIGINS
-      #   value: '["https://your-app.vercel.app"]'
-      #
       # Upstash Redis for persistent velocity across restarts (else in-memory):
       # - key: REDIS_URL
       #   sync: false
