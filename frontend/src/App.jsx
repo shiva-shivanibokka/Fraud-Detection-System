@@ -4,7 +4,9 @@ import * as d3 from "d3";
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-const API = "http://localhost:8000";
+// API base URL. In production (Vercel) this comes from VITE_API_URL
+// (see frontend/.env.production); locally it falls back to the dev server.
+const API = import.meta.env.VITE_API_URL || "http://localhost:8000";
 const US_STATES = [
   "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA",
   "KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ",
