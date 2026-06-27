@@ -23,10 +23,27 @@ Usage (PowerShell)
 """
 
 import os
+import socket
 import sys
 from pathlib import Path
 
 from huggingface_hub import HfApi, create_repo
+
+
+def _prefer_ipv4() -> None:
+    """Force IPv4 for outbound connections.
+
+    On networks with a broken IPv6 path to the HF CDN, Python's httpx/httpcore
+    hangs because (unlike curl) it does not do Happy Eyeballs — it tries the
+    IPv6 address first and never falls back. Pinning getaddrinfo to AF_INET
+    avoids the hang.
+    """
+    _orig = socket.getaddrinfo
+
+    def _ipv4_only(host, port, family=0, type=0, proto=0, flags=0):
+        return _orig(host, port, socket.AF_INET, type, proto, flags)
+
+    socket.getaddrinfo = _ipv4_only
 
 REPO_ID = os.environ.get("HF_REPO_ID", "").strip()
 MODEL_DIR = os.environ.get("MODEL_DIR", "models").strip()
@@ -36,6 +53,7 @@ PRIVATE = os.environ.get("HF_PRIVATE", "").strip() in {"1", "true", "True"}
 
 
 def main() -> int:
+    _prefer_ipv4()
     if not REPO_ID:
         print("ERROR: HF_REPO_ID is not set. Example: your-username/fraud-detection-model")
         return 1

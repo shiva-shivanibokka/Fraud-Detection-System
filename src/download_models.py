@@ -17,10 +17,27 @@ Environment variables (same names/defaults as src/config.py):
 """
 
 import os
+import socket
 from pathlib import Path
 
 # The file we treat as proof that the artifacts are present.
 SENTINEL = "fraud_model.pkl"
+
+
+def _prefer_ipv4() -> None:
+    """Force IPv4 for outbound connections.
+
+    On networks with a broken IPv6 path to the HF CDN, Python's httpx/httpcore
+    hangs because (unlike curl) it does not do Happy Eyeballs — it tries the
+    IPv6 address first and never falls back. Pinning getaddrinfo to AF_INET
+    avoids the hang. Harmless where IPv6 works (HF also serves over IPv4).
+    """
+    _orig = socket.getaddrinfo
+
+    def _ipv4_only(host, port, family=0, type=0, proto=0, flags=0):
+        return _orig(host, port, socket.AF_INET, type, proto, flags)
+
+    socket.getaddrinfo = _ipv4_only
 
 
 def ensure_models(
@@ -51,6 +68,7 @@ def ensure_models(
         return False
 
     try:
+        _prefer_ipv4()
         from huggingface_hub import snapshot_download
 
         print(f"[download_models] Downloading artifacts from HF Hub repo '{repo_id}' "
