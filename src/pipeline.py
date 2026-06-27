@@ -17,13 +17,13 @@ Run: python src/pipeline.py
      python src/pipeline.py --force            (force retrain everything)
 """
 
+import argparse
 import os
 import sys
-import argparse
+import warnings
+
 import joblib
 import pandas as pd
-import numpy as np
-import warnings
 
 warnings.filterwarnings("ignore")
 
@@ -83,13 +83,13 @@ def stage3_graph(
         return pd.read_parquet(train_graph_path), pd.read_parquet(test_graph_path)
 
     print("\n[pipeline] Stage 3: Entity Graph + GraphSAGE")
+
     from graph.entity_graph import (
+        attach_gnn_embeddings,
         build_entity_graph,
         compute_graph_features,
         train_graphsage,
-        attach_gnn_embeddings,
     )
-    import networkx as nx
 
     G = build_entity_graph(train)
     # Save graph for visualization in React dashboard
@@ -139,11 +139,11 @@ def stage4_fraud_rings(train: pd.DataFrame, force: bool) -> pd.DataFrame:
 
     print("\n[pipeline] Stage 4: Fraud Ring Detection (Stripe Similarity Approach)")
     from graph.fraud_rings import (
-        generate_training_pairs,
-        train_similarity_model,
         detect_fraud_rings,
+        generate_training_pairs,
         get_ring_stats,
         save_similarity_model,
+        train_similarity_model,
     )
 
     # fraud_rings.py expects 'card_id' column — our data uses 'cc_num'
@@ -160,13 +160,9 @@ def stage4_fraud_rings(train: pd.DataFrame, force: bool) -> pd.DataFrame:
         train_rings["ring_id"].values if "ring_id" in train_rings.columns else "NO_RING"
     )
 
-    ring_stats = get_ring_stats(
-        train_rings if "ring_id" in train_rings.columns else train
-    )
+    ring_stats = get_ring_stats(train_rings if "ring_id" in train_rings.columns else train)
     if not ring_stats.empty:
-        ring_stats.to_json(
-            os.path.join(MODELS_DIR, "ring_stats.json"), orient="records", indent=2
-        )
+        ring_stats.to_json(os.path.join(MODELS_DIR, "ring_stats.json"), orient="records", indent=2)
         print(f"[pipeline] Found {len(ring_stats)} fraud rings")
         print(ring_stats.head(5).to_string())
 
@@ -184,16 +180,14 @@ def stage5_rules(train: pd.DataFrame, force: bool) -> None:
     print("\n[pipeline] Stage 5: FP-Growth Auto-Rule Mining (Uber RADAR Approach)")
     from rules.fp_growth_rules import (
         discretize_for_fpgrowth,
+        format_rule_for_display,
         mine_fraud_rules,
         save_rules_to_json,
-        format_rule_for_display,
     )
 
     fraud_df = train[train["is_fraud"] == 1]
     disc_df = discretize_for_fpgrowth(train, fraud_df)
-    rules_df = mine_fraud_rules(
-        disc_df, min_support=0.02, min_confidence=0.5, min_lift=1.5
-    )
+    rules_df = mine_fraud_rules(disc_df, min_support=0.02, min_confidence=0.5, min_lift=1.5)
 
     if not rules_df.empty:
         save_rules_to_json(rules_df, rules_path)
@@ -267,8 +261,8 @@ def run_pipeline(subsample: float = 1.0, force: bool = False) -> None:
         print(f"  Precision@1%:        {m.get('precision_at_1pct', 0):.4f}")
         print(f"  Recall@0.1%FPR:      {m.get('recall_at_01fpr', 0):.4f}")
         print(f"  Dollar capture rate: {m.get('dollar_capture_rate', 0):.4f}")
-    print(f"\nStart the API server: uvicorn src.api.main:app --reload")
-    print(f"Start the React dashboard: cd frontend && npm run dev")
+    print("\nStart the API server: uvicorn src.api.main:app --reload")
+    print("Start the React dashboard: cd frontend && npm run dev")
 
 
 if __name__ == "__main__":
