@@ -1,0 +1,7 @@
+# Dev / CI dependencies: the runtime API deps plus test + lint tooling.
+# Install with:  pip install -r requirements-dev.txt
+-r requirements-api.txt
+
+pytest==9.1.1
+httpx==0.28.1
+ruff==0.15.12
