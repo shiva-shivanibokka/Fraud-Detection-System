@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from src.config import settings
+from src.velocity.feature_store import VelocityFeatureStore
 
 try:
     import structlog
@@ -33,73 +34,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-MODELS_DIR = os.path.join(BASE_DIR, settings.model_dir)
-
-
-# ---------------------------------------------------------------------------
-# Velocity store (Redis if available, else in-memory)
-# ---------------------------------------------------------------------------
-class InMemoryVelocityStore:
-    """Sliding-window counter backed by a deque per key."""
-
-    def __init__(self):
-        self._store: dict[str, collections.deque] = collections.defaultdict(collections.deque)
-
-    def incr_window(self, key: str, window_seconds: int, ts: float) -> int:
-        dq = self._store[key]
-        cutoff = ts - window_seconds
-        while dq and dq[0] < cutoff:
-            dq.popleft()
-        dq.append(ts)
-        return len(dq)
-
-    def get_count(self, key: str, window_seconds: int, ts: float) -> int:
-        dq = self._store[key]
-        cutoff = ts - window_seconds
-        return sum(1 for t in dq if t >= cutoff)
-
-
-class VelocityFeatureStore:
-    def __init__(self):
-        self.redis = None
-        self._mem = InMemoryVelocityStore()
-        self._use_redis = False
-        try:
-            import redis as _redis
-
-            r = _redis.from_url(settings.redis_url, socket_connect_timeout=1)
-            r.ping()
-            self.redis = r
-            self._use_redis = True
-            logger.info("velocity_store", backend="redis")
-        except Exception:
-            logger.info("velocity_store", backend="in_memory")
-
-    def record_and_count(self, cc_num: str, ip_prefix: str, ts: float) -> dict[str, int]:
-        if self._use_redis:
-            pipe = self.redis.pipeline()
-            for key, ttl in [
-                (f"vel:card:{cc_num}", 60),
-                (f"vel:card:{cc_num}", 3600),
-                (f"vel:ip:{ip_prefix}", 60),
-            ]:
-                pipe.zadd(key, {str(ts): ts})
-                pipe.zremrangebyscore(key, "-inf", ts - ttl)
-                pipe.zcard(key)
-                pipe.expire(key, ttl)
-            results = pipe.execute()
-            return {
-                "vel_card_1min": results[2],
-                "vel_card_1hr": results[6],
-                "vel_ip_1min": results[10],
-            }
-        else:
-            return {
-                "vel_card_1min": self._mem.incr_window(f"card:{cc_num}", 60, ts),
-                "vel_card_1hr": self._mem.incr_window(f"card_hr:{cc_num}", 3600, ts),
-                "vel_ip_1min": self._mem.incr_window(f"ip:{ip_prefix}", 60, ts),
-            }
+MODELS_DIR = os.path.join(os.path.dirname(__file__), "..", "..", settings.model_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -169,9 +104,9 @@ async def lifespan(app: FastAPI):
             "age",
             "geo_distance_km",
             "city_pop",
-            "vel_card_1min",
-            "vel_card_1hr",
-            "vel_ip_1min",
+            "vel_card_1min_count",
+            "vel_card_1hr_count",
+            "vel_ip_prefix_1min_count",
         ]
 
     # ---- Load card embeddings ----
@@ -191,9 +126,9 @@ async def lifespan(app: FastAPI):
         for card in ring.get("cards") or []:
             state.known_fraud_cards.add(str(card))
 
-    # ---- Velocity store ----
+    # ---- Velocity store (canonical: Redis or in-memory fallback) ----
     state.velocity_store = VelocityFeatureStore()
-    state.redis_available = state.velocity_store._use_redis
+    state.redis_available = state.velocity_store.use_redis
 
     # ---- SHAP explainer (best-effort background init) ----
     try:
@@ -281,7 +216,7 @@ def _percentile(data: list[float], pct: int) -> float:
     return arr[min(idx, len(arr) - 1)]
 
 
-def _build_feature_vector(req: TransactionRequest, vel: dict[str, int]) -> np.ndarray:
+def _build_feature_vector(req: TransactionRequest, vel: dict) -> np.ndarray:
     raw = {
         "amt": req.amt,
         "hour": req.hour,
@@ -291,9 +226,7 @@ def _build_feature_vector(req: TransactionRequest, vel: dict[str, int]) -> np.nd
         "age": req.age,
         "geo_distance_km": req.geo_distance_km,
         "city_pop": req.city_pop,
-        "vel_card_1min": vel.get("vel_card_1min", 0),
-        "vel_card_1hr": vel.get("vel_card_1hr", 0),
-        "vel_ip_1min": vel.get("vel_ip_1min", 0),
+        **vel,  # all 60 canonical velocity features from VelocityFeatureStore
     }
     vec = [raw.get(col, 0.0) for col in state.feature_cols]
     return np.array(vec, dtype=np.float32).reshape(1, -1)
@@ -361,7 +294,7 @@ def _shap_reasons(features: np.ndarray, vel: dict, score: float) -> list[str]:
         idx = cols.index(name) if name in cols else -1
         return float(features[0][idx]) if idx >= 0 else 0.0
 
-    vel_1min = vel.get("vel_card_1min", 0)
+    vel_1min = vel.get("vel_card_1min_count", 0)
     if vel_1min > 2:
         reasons.append(f"High transaction velocity on this card (1-min count: {vel_1min})")
     if fval("amt") > 1000:
@@ -370,8 +303,8 @@ def _shap_reasons(features: np.ndarray, vel: dict, score: float) -> list[str]:
         reasons.append(f"Large geographic distance ({fval('geo_distance_km'):.0f} km from home)")
     if fval("is_night") == 1:
         reasons.append("Transaction occurred during nighttime hours")
-    if fval("vel_ip_1min") > 3:
-        ip_count = int(vel.get("vel_ip_1min", 0))
+    ip_count = int(vel.get("vel_ip_prefix_1min_count", 0))
+    if ip_count > 3:
         reasons.append(f"IP prefix shared with {ip_count} recent transactions")
     if not reasons:
         reasons.append(f"Model score: {score:.2%} fraud probability")
@@ -407,11 +340,26 @@ async def score_transaction(req: TransactionRequest, request: Request):
             triggered_rules=[],
         )
 
-    # ---- Velocity: record + fetch counts ----
-    vel = state.velocity_store.record_and_count(req.cc_num, req.ip_prefix, ts)
+    # ---- Velocity: record transaction then fetch canonical features ----
+    state.velocity_store.record_transaction(
+        card_id=req.cc_num,
+        device_id=req.device_id,
+        ip_prefix=req.ip_prefix,
+        merchant=req.merchant,
+        amount=req.amt,
+        timestamp=ts,
+        trans_id=trans_id,
+    )
+    vel = state.velocity_store.get_velocity_features(
+        card_id=req.cc_num,
+        device_id=req.device_id,
+        ip_prefix=req.ip_prefix,
+        merchant=req.merchant,
+        now=ts,
+    )
 
     # ---- Layer 1b: velocity hard cap ----
-    if vel.get("vel_card_1min", 0) > 5:
+    if vel.get("vel_card_1min_count", 0) > 5:
         elapsed = (time.perf_counter() - t_start) * 1000
         state.total_scored += 1
         state.decline_count += 1
@@ -421,7 +369,7 @@ async def score_transaction(req: TransactionRequest, request: Request):
             decision="DECLINE",
             fraud_score=1.0,
             layer_triggered="rules",
-            reasons=[f"Velocity limit exceeded: {vel['vel_card_1min']} txns in last 60s"],
+            reasons=[f"Velocity limit exceeded: {vel['vel_card_1min_count']} txns in last 60s"],
             latency_ms=round(elapsed, 2),
             model_latency_ms=0.0,
             triggered_rules=[],
@@ -468,9 +416,8 @@ async def score_transaction(req: TransactionRequest, request: Request):
 
 @app.get("/health")
 async def health():
-    # Attempt a live Redis ping to report actual connectivity
     redis_connected = False
-    if state.velocity_store is not None and state.velocity_store._use_redis:
+    if state.velocity_store is not None and state.velocity_store.use_redis:
         try:
             state.velocity_store.redis.ping()
             redis_connected = True
@@ -543,12 +490,12 @@ async def feature_importance():
     defaults = {
         "amt": 0.28,
         "geo_distance_km": 0.18,
-        "vel_card_1min": 0.16,
+        "vel_card_1min_count": 0.16,
         "hour": 0.09,
         "age": 0.08,
         "city_pop": 0.07,
-        "vel_card_1hr": 0.06,
-        "vel_ip_1min": 0.05,
+        "vel_card_1hr_count": 0.06,
+        "vel_ip_prefix_1min_count": 0.05,
         "is_night": 0.02,
         "is_weekend": 0.01,
     }
