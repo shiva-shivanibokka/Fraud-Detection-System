@@ -1,0 +1,38 @@
+# Render Blueprint — deploys the FastAPI fraud-detection backend.
+# Docs: https://render.com/docs/blueprint-spec
+#
+# How it works:
+#   build  -> install slim deps, then pull model artifacts from HF Hub
+#   start  -> run Uvicorn bound to Render's injected $PORT
+#   health -> Render polls /health to know the service is live
+#
+# The model files are NOT in git (gitignored); they are downloaded from the
+# Hugging Face Hub repo named in HF_REPO_ID at build time (and cached for
+# startup). See src/download_models.py.
+
+services:
+  - type: web
+    name: fraud-detection-api
+    runtime: python
+    plan: free
+    branch: main
+    autoDeploy: true
+    healthCheckPath: /health
+    buildCommand: "pip install -r requirements-api.txt && python -m src.download_models"
+    startCommand: "uvicorn src.api.main:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      # Pin Python to the 3.11 line the model + deps were verified on.
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      # Where to pull model artifacts from (public HF Hub model repo).
+      - key: HF_REPO_ID
+        value: "shiva-1993/fraud-detection-model"
+
+      # --- Optional, set later in the Render dashboard ---
+      # Allow the deployed frontend origin once Vercel is live:
+      # - key: CORS_ORIGINS
+      #   value: '["https://your-app.vercel.app"]'
+      #
+      # Upstash Redis for persistent velocity across restarts (else in-memory):
+      # - key: REDIS_URL
+      #   sync: false
