@@ -1,0 +1,41 @@
+# ---------------------------------------------------------------------------
+# SLIM API requirements — for SERVING the FastAPI inference backend only.
+#
+# Why this file exists (vs. the full requirements.txt):
+#   The full requirements.txt pulls in torch + torch-geometric (~2-3 GB),
+#   which are needed ONLY for offline training of the TGAT graph model.
+#   They DO NOT fit on Render.com's free tier (512 MB RAM, limited build
+#   minutes) and would fail the deploy. The serving API never trains — it
+#   only loads pre-trained artifacts from models/ and runs inference.
+#
+#   At serving time the API loads fraud_model.pkl via joblib (an sklearn
+#   CalibratedClassifierCV wrapping an XGBoost model), so scikit-learn and
+#   xgboost ARE required here. onnxruntime is kept for when a valid ONNX
+#   export is available (the current models/fraud_model.onnx is a mislabeled
+#   XGBoost dump, so the API falls back to the .pkl).
+#
+# Use this file for the Render deploy:  pip install -r requirements-api.txt
+# Versions pinned to the set verified working locally (Python 3.11).
+# ---------------------------------------------------------------------------
+
+# --- API framework ---
+fastapi==0.138.1
+uvicorn[standard]==0.49.0
+pydantic==2.13.4
+pydantic-settings==2.14.2
+
+# --- Data / numerics (feature store + feature vectors) ---
+numpy==2.4.6
+pandas==3.0.3
+
+# --- Model loading + inference ---
+scikit-learn==1.9.0
+xgboost==3.2.0
+joblib==1.5.3
+onnxruntime==1.27.0
+
+# --- Velocity feature store (Redis dual-mode, in-memory fallback) ---
+redis==8.0.1
+
+# --- Structured logging ---
+structlog==26.1.0
