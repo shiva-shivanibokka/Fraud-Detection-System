@@ -63,6 +63,10 @@ class VelocityFeatureStore:
         url = redis_url or settings.redis_url
         if REDIS_AVAILABLE:
             try:
+                # Redis connection is environment-driven:
+                # - Local dev: REDIS_URL=redis://localhost:6379 (plain TCP)
+                # - Upstash (prod): REDIS_URL=rediss://...upstash.io:6380 (TLS, same redis-py API)
+                # redis.from_url() handles both transparently.
                 self.redis = redis.from_url(
                     url,
                     db=1,
