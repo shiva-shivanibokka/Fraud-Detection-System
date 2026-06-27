@@ -121,9 +121,13 @@ async def lifespan(app: FastAPI):
     state.fraud_rules = _load_json(os.path.join(MODELS_DIR, "fraud_rules.json"), default=[])
 
     # ---- Build blocklist from ring stats ----
+    # ring_stats.json may be either a bare list of ring objects or a dict with a
+    # "rings" key. Normalize to a list so startup never crashes on either shape.
     ring_stats = _load_json(os.path.join(MODELS_DIR, "ring_stats.json"), default={})
-    for ring in ring_stats.get("rings") or []:
-        for card in ring.get("cards") or []:
+    rings = ring_stats.get("rings", []) if isinstance(ring_stats, dict) else ring_stats
+    for ring in rings or []:
+        cards = ring.get("cards") if isinstance(ring, dict) else None
+        for card in cards or []:
             state.known_fraud_cards.add(str(card))
 
     # ---- Velocity store (canonical: Redis or in-memory fallback) ----
