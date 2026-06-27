@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from src.config import settings
+from src.download_models import ensure_models
 from src.velocity.feature_store import VelocityFeatureStore
 
 try:
@@ -71,6 +72,9 @@ def _load_json(path: str, default: Any = None) -> Any:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # ---- Ensure model artifacts exist (pull from HF Hub if not cached) ----
+    ensure_models(settings.hf_repo_id, settings.model_dir)
+
     # ---- Load ONNX model ----
     try:
         import onnxruntime as ort
