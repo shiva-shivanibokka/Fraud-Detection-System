@@ -846,7 +846,7 @@ async def _store_feedback(record: dict) -> dict:
         try:
             import httpx
 
-            url = f"{settings.supabase_url.rstrip('/')}/rest/v1/feedback"
+            url = f"{settings.supabase_url.rstrip('/')}/rest/v1/analyst_feedback"
             headers = {
                 "apikey": settings.supabase_key,
                 "Authorization": f"Bearer {settings.supabase_key}",

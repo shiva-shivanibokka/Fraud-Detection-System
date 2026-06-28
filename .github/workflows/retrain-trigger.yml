@@ -1,0 +1,46 @@
+name: Retrain Trigger
+
+# Active-learning loop (Sprint 4). On a nightly schedule, aggregate the analyst
+# feedback collected via POST /feedback and decide whether enough new labels
+# have accumulated to justify a model retrain. Reports only by default; the
+# actual `python -m src.model.train` step is gated on the signal AND on having
+# the labelled dataset available (not present on the free-tier box), so it is
+# left commented until a data-mounted runner is wired up.
+
+on:
+  schedule:
+    - cron: "0 3 * * *"  # 03:00 UTC nightly
+  workflow_dispatch:
+    inputs:
+      threshold:
+        description: "New labels required to signal a retrain"
+        default: "50"
+
+jobs:
+  evaluate-feedback:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install minimal deps
+        run: pip install httpx pydantic pydantic-settings
+
+      - name: Evaluate feedback
+        id: trigger
+        run: python -m scripts.retrain_from_feedback --threshold "${{ github.event.inputs.threshold || '50' }}"
+
+      - name: Report decision
+        run: |
+          echo "Retrain signal: ${{ steps.trigger.outputs.retrain }}"
+          echo "Accumulated labels: ${{ steps.trigger.outputs.label_count }}"
+
+      # - name: Retrain (requires labelled dataset on the runner)
+      #   if: steps.trigger.outputs.retrain == 'true'
+      #   run: python -m src.model.train
