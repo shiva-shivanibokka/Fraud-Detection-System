@@ -5,3 +5,5 @@
 pytest==9.1.1
 httpx==0.28.1
 ruff==0.15.12
+# Offline velocity engine — exercised by tests/test_velocity_duckdb.py
+duckdb==1.5.4
