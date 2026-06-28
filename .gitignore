@@ -12,6 +12,7 @@ data/feedback.jsonl
 models/elliptic_graph.json
 models/entity_graph.json
 models/encoders.json
+models/ring_stats.json
 
 # Local audit working docs (kept out of the public portfolio repo)
 AUDIT.md
