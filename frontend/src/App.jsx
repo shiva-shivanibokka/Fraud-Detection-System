@@ -49,6 +49,53 @@ const btn = (color = "#6366f1") => ({
 });
 
 // ---------------------------------------------------------------------------
+// LLM config (BYOK) — provider, model, and API key live ONLY in this browser's
+// localStorage and are sent with each request via X-LLM-* headers. They are
+// never persisted on the server.
+// ---------------------------------------------------------------------------
+const LLM_LS = { provider: "fds_llm_provider", model: "fds_llm_model", key: "fds_llm_key" };
+
+function loadLLMConfig() {
+  return {
+    provider: localStorage.getItem(LLM_LS.provider) || "",
+    model: localStorage.getItem(LLM_LS.model) || "",
+    key: localStorage.getItem(LLM_LS.key) || "",
+  };
+}
+function saveLLMConfig({ provider, model, key }) {
+  localStorage.setItem(LLM_LS.provider, provider);
+  localStorage.setItem(LLM_LS.model, model);
+  localStorage.setItem(LLM_LS.key, key);
+}
+function hasLLMConfig() {
+  const c = loadLLMConfig();
+  return Boolean(c.provider && c.key);
+}
+function llmHeaders() {
+  const c = loadLLMConfig();
+  return { "X-LLM-Provider": c.provider, "X-LLM-Model": c.model, "X-LLM-Key": c.key };
+}
+async function llmPost(path, body) {
+  const res = await fetch(`${API}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...llmHeaders() },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+  return data;
+}
+
+// Renders a markdown-ish LLM string as readable pre-wrapped text (no md lib).
+const llmText = {
+  whiteSpace: "pre-wrap", lineHeight: 1.55, fontSize: 13.5, color: "#cbd5e1",
+};
+const needsKeyNote = {
+  background: "#0f0f1a", border: "1px dashed #3e3e5e", borderRadius: 8,
+  padding: "14px 16px", color: "#94a3b8", fontSize: 13,
+};
+
+// ---------------------------------------------------------------------------
 // Tab 1 — Live Scoring
 // ---------------------------------------------------------------------------
 function randCard() {
@@ -59,6 +106,51 @@ function randDevice() {
 }
 function randIp() {
   return `${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`;
+}
+
+// Analyst feedback (✓/✗) on a scored transaction -> POST /feedback (active learning).
+function FeedbackButtons({ result }) {
+  const [sent, setSent] = useState(null); // "fraud" | "legit" | null
+  const [err, setErr] = useState(null);
+
+  const send = async (labelVal) => {
+    setErr(null);
+    try {
+      const res = await fetch(`${API}/feedback`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          trans_id: result.trans_id, decision: result.decision,
+          fraud_score: result.fraud_score, label: labelVal,
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setSent(labelVal);
+    } catch (e) {
+      setErr(e.message);
+    }
+  };
+
+  if (sent) {
+    return (
+      <div style={{ marginTop: 14, fontSize: 12, color: "#22c55e" }}>
+        ✓ Logged as <b>{sent === "fraud" ? "confirmed fraud" : "legitimate"}</b> — feeds the retraining queue.
+      </div>
+    );
+  }
+  return (
+    <div style={{ marginTop: 16, borderTop: "1px solid #2e2e4e", paddingTop: 12 }}>
+      <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 8, fontWeight: 600 }}>
+        ANALYST FEEDBACK
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button style={{ ...btn("#dc2626"), padding: "7px 14px", fontSize: 12 }}
+          onClick={() => send("fraud")}>✗ Confirm Fraud</button>
+        <button style={{ ...btn("#16a34a"), padding: "7px 14px", fontSize: 12 }}
+          onClick={() => send("legit")}>✓ Mark Legitimate</button>
+      </div>
+      {err && <div style={{ marginTop: 6, color: "#f87171", fontSize: 12 }}>{err}</div>}
+    </div>
+  );
 }
 
 function LiveScoring() {
@@ -210,6 +302,8 @@ function LiveScoring() {
                 ))}
               </div>
             )}
+
+            <FeedbackButtons result={result} />
           </>
         )}
       </div>
@@ -511,9 +605,265 @@ function RuleExplorer() {
 }
 
 // ---------------------------------------------------------------------------
+// Tab 5 — Settings (BYOK: provider + model + API key)
+// ---------------------------------------------------------------------------
+function Settings() {
+  const [providers, setProviders] = useState([]);
+  const [cfg, setCfg] = useState(loadLLMConfig());
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    fetch(`${API}/llm/providers`)
+      .then((r) => r.json())
+      .then((d) => {
+        const list = d.providers || [];
+        setProviders(list);
+        setCfg((c) => {
+          if (!c.provider && list.length) return { ...c, provider: list[0].id, model: list[0].models[0] };
+          return c;
+        });
+      })
+      .catch((e) => setError(e.message));
+  }, []);
+
+  const current = providers.find((p) => p.id === cfg.provider);
+  const onProvider = (id) => {
+    const p = providers.find((x) => x.id === id);
+    setCfg((c) => ({ ...c, provider: id, model: p?.models?.[0] || "" }));
+    setSaved(false);
+  };
+  const save = () => { saveLLMConfig(cfg); setSaved(true); };
+
+  return (
+    <div style={{ maxWidth: 620 }}>
+      <div style={card}>
+        <h3 style={{ margin: "0 0 6px", color: "#c4b5fd" }}>LLM Copilot — API Settings</h3>
+        <p style={{ fontSize: 13, color: "#94a3b8", marginBottom: 18 }}>
+          The copilot, case reports, and rule editor use your own API key (BYOK). Pick a
+          provider and model, paste your key, and save. Your key is stored <b>only in this
+          browser</b> and is sent directly with each request — it is never stored on the server.
+        </p>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+          <div>
+            <span style={label}>Provider</span>
+            <select style={input} value={cfg.provider} onChange={(e) => onProvider(e.target.value)}>
+              {providers.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <span style={label}>Model</span>
+            <select style={input} value={cfg.model}
+              onChange={(e) => { setCfg((c) => ({ ...c, model: e.target.value })); setSaved(false); }}>
+              {(current?.models || []).map((m) => <option key={m} value={m}>{m}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 14 }}>
+          <span style={label}>API Key {current && <span style={{ color: "#64748b" }}>({current.key_hint})</span>}</span>
+          <input style={input} type="password" placeholder="Paste your key" value={cfg.key}
+            onChange={(e) => { setCfg((c) => ({ ...c, key: e.target.value })); setSaved(false); }} />
+          {current?.key_url && (
+            <a href={current.key_url} target="_blank" rel="noreferrer"
+              style={{ fontSize: 12, color: "#818cf8", marginTop: 6, display: "inline-block" }}>
+              Get a {current.label} key →
+            </a>
+          )}
+        </div>
+
+        <div style={{ display: "flex", gap: 12, alignItems: "center", marginTop: 18 }}>
+          <button style={btn()} onClick={save} disabled={!cfg.provider || !cfg.key}>Save</button>
+          {saved && <span style={{ color: "#22c55e", fontSize: 13 }}>✓ Saved to this browser</span>}
+          {error && <span style={{ color: "#f87171", fontSize: 13 }}>{error}</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tab 6 — Analyst Copilot (chat + NL rule editor + fraud-ring case reports)
+// ---------------------------------------------------------------------------
+function CopilotChat() {
+  const [q, setQ] = useState("Which merchant categories have the highest fraud lift?");
+  const [answer, setAnswer] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const ask = async () => {
+    setLoading(true); setError(null); setAnswer(null);
+    try {
+      const d = await llmPost("/llm/copilot", { question: q });
+      setAnswer(d);
+    } catch (e) { setError(e.message); } finally { setLoading(false); }
+  };
+
+  return (
+    <div style={card}>
+      <h3 style={{ margin: "0 0 4px", color: "#c4b5fd" }}>Analyst Copilot</h3>
+      <p style={{ fontSize: 12, color: "#64748b", marginBottom: 12 }}>
+        Grounded on the system's live fraud knowledge — FP-Growth rules, ring stats, metrics,
+        and feature importances. Answers cite only what the system actually knows.
+      </p>
+      <textarea style={{ ...input, minHeight: 64, resize: "vertical", fontFamily: "inherit" }}
+        value={q} onChange={(e) => setQ(e.target.value)} />
+      <div style={{ marginTop: 10 }}>
+        <button style={btn()} onClick={ask} disabled={loading || !q.trim()}>
+          {loading ? "Thinking…" : "Ask Copilot"}
+        </button>
+      </div>
+      {error && <div style={{ marginTop: 10, color: "#f87171", fontSize: 13 }}>{error}</div>}
+      {answer && (
+        <div style={{ marginTop: 14 }}>
+          <div style={llmText}>{answer.answer}</div>
+          {answer.grounded_on && (
+            <div style={{ marginTop: 10, fontSize: 11, color: "#64748b" }}>
+              Grounded on {answer.grounded_on.rules} rules, {answer.grounded_on.rings} rings,
+              {" "}{answer.grounded_on.features} features.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RuleFromText() {
+  const [text, setText] = useState("Flag any charge over $1000 made before 6am");
+  const [rule, setRule] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const gen = async () => {
+    setLoading(true); setError(null); setRule(null);
+    try {
+      const d = await llmPost("/llm/rule-from-text", { text });
+      setRule(d.rule);
+    } catch (e) { setError(e.message); } finally { setLoading(false); }
+  };
+
+  const actionColor = (a) => (a === "DECLINE" ? "#dc2626" : a === "REVIEW" ? "#d97706" : "#6366f1");
+
+  return (
+    <div style={card}>
+      <h3 style={{ margin: "0 0 4px", color: "#c4b5fd" }}>Natural-Language Rule Editor</h3>
+      <p style={{ fontSize: 12, color: "#64748b", marginBottom: 12 }}>
+        Describe a fraud rule in plain English; the model returns a structured rule object
+        (antecedent terms + action) that mirrors the engine's format.
+      </p>
+      <input style={input} value={text} onChange={(e) => setText(e.target.value)} />
+      <div style={{ marginTop: 10 }}>
+        <button style={btn()} onClick={gen} disabled={loading || !text.trim()}>
+          {loading ? "Generating…" : "Generate Rule"}
+        </button>
+      </div>
+      {error && <div style={{ marginTop: 10, color: "#f87171", fontSize: 13 }}>{error}</div>}
+      {rule && (
+        <div style={{ marginTop: 14, background: "#0f0f1a", borderRadius: 8, padding: "14px 16px" }}>
+          <div style={{ marginBottom: 8 }}>
+            {(rule.antecedent || []).map((a) => (
+              <span key={a} style={{
+                display: "inline-block", background: "#2e2e4e", borderRadius: 4,
+                padding: "3px 9px", marginRight: 5, marginBottom: 4, fontSize: 12,
+              }}>{a}</span>
+            ))}
+            <span style={{ color: "#64748b", fontSize: 12 }}>→</span>
+            <span style={{
+              marginLeft: 8, color: actionColor(rule.action), fontWeight: 700, fontSize: 13,
+            }}>{rule.action}</span>
+          </div>
+          <div style={{ fontSize: 12, color: "#94a3b8" }}>
+            Confidence: {(rule.confidence * 100).toFixed(0)}% · {rule.rationale}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CaseReport() {
+  const [rings, setRings] = useState([]);
+  const [idx, setIdx] = useState(0);
+  const [report, setReport] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    fetch(`${API}/fraud-rings`)
+      .then((r) => r.json())
+      .then((d) => setRings(Array.isArray(d) ? d : (d.rings || [])))
+      .catch(() => setRings([]));
+  }, []);
+
+  const gen = async () => {
+    setLoading(true); setError(null); setReport(null);
+    try {
+      const d = await llmPost("/llm/case-report", { ring_id: idx });
+      setReport(d.report);
+    } catch (e) { setError(e.message); } finally { setLoading(false); }
+  };
+
+  const sizeOf = (r) => (r?.cards?.length ?? 0);
+
+  return (
+    <div style={card}>
+      <h3 style={{ margin: "0 0 4px", color: "#c4b5fd" }}>Fraud-Ring Case Report</h3>
+      <p style={{ fontSize: 12, color: "#64748b", marginBottom: 12 }}>
+        One-click investigator narrative generated from a detected fraud ring's statistics.
+      </p>
+      {rings.length === 0 ? (
+        <div style={{ color: "#64748b", fontSize: 13 }}>No fraud rings available.</div>
+      ) : (
+        <>
+          <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
+            <div style={{ flex: 1 }}>
+              <span style={label}>Ring</span>
+              <select style={input} value={idx} onChange={(e) => setIdx(parseInt(e.target.value, 10))}>
+                {rings.map((r, i) => (
+                  <option key={i} value={i}>Ring #{i} — {sizeOf(r)} cards</option>
+                ))}
+              </select>
+            </div>
+            <button style={btn()} onClick={gen} disabled={loading}>
+              {loading ? "Writing…" : "Generate Report"}
+            </button>
+          </div>
+          {error && <div style={{ marginTop: 10, color: "#f87171", fontSize: 13 }}>{error}</div>}
+          {report && <div style={{ ...llmText, marginTop: 14 }}>{report}</div>}
+        </>
+      )}
+    </div>
+  );
+}
+
+function Copilot() {
+  if (!hasLLMConfig()) {
+    return (
+      <div style={{ maxWidth: 620 }}>
+        <div style={needsKeyNote}>
+          🔑 Add your LLM provider and API key in the <b>Settings</b> tab to use the copilot,
+          rule editor, and case reports. Your key stays in your browser.
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div style={{ display: "grid", gap: 16 }}>
+      <CopilotChat />
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        <RuleFromText />
+        <CaseReport />
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Root App
 // ---------------------------------------------------------------------------
-const TABS = ["Live Scoring", "Fraud Ring Graph", "Drift Monitor", "Rule Explorer"];
+const TABS = ["Live Scoring", "Fraud Ring Graph", "Drift Monitor", "Rule Explorer", "Copilot", "Settings"];
 
 export default function App() {
   const [tab, setTab] = useState(0);
@@ -547,6 +897,8 @@ export default function App() {
         {tab === 1 && <FraudRingGraph />}
         {tab === 2 && <DriftMonitor />}
         {tab === 3 && <RuleExplorer />}
+        {tab === 4 && <Copilot />}
+        {tab === 5 && <Settings />}
       </div>
     </div>
   );
