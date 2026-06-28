@@ -23,6 +23,17 @@ def test_score_returns_valid_decision(client):
     assert d["latency_ms"] >= 0.0
 
 
+def test_score_includes_conformal_fields(client):
+    """Every score carries a conformal uncertainty signal (MAPIE LAC)."""
+    d = client.post("/score", json={"cc_num": "4111111111111111", "amt": 42.50}).json()
+    assert d["confidence_label"] in {
+        "confident_fraud", "confident_legit", "uncertain", "unknown"
+    }
+    assert isinstance(d["prediction_set"], list)
+    assert all(c in {"fraud", "legit"} for c in d["prediction_set"])
+    assert 0.0 <= d["conformal_coverage"] <= 1.0
+
+
 def test_score_requires_amount_and_card(client):
     # cc_num and amt are required fields -> 422 when missing
     r = client.post("/score", json={"cc_num": "4111111111111111"})

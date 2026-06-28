@@ -57,6 +57,7 @@ class AppState:
     decline_count: int = 0
     onnx_available: bool = False
     redis_available: bool = False
+    conformal: dict = {}
 
 
 state = AppState()
@@ -140,6 +141,9 @@ async def lifespan(app: FastAPI):
 
     # ---- Load FP-Growth rules ----
     state.fraud_rules = _load_json(os.path.join(MODELS_DIR, "fraud_rules.json"), default=[])
+
+    # ---- Load conformal calibration (uncertainty band) ----
+    state.conformal = _load_json(os.path.join(MODELS_DIR, "conformal.json"), default={})
 
     # ---- Build blocklist from ring stats ----
     # ring_stats.json may be either a bare list of ring objects or a dict with a
@@ -228,6 +232,10 @@ class ScoreResponse(BaseModel):
     latency_ms: float
     model_latency_ms: float
     triggered_rules: list[dict]
+    # Conformal uncertainty (MAPIE LAC); empty/defaults when calibration absent.
+    confidence_label: str = "unknown"
+    prediction_set: list[str] = []
+    conformal_coverage: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +286,38 @@ def _run_model(features: np.ndarray) -> tuple[float, float]:
         score = min(1.0, (amt / 5000.0) * 0.4 + (vel / 6.0) * 0.6)
     latency_ms = (time.perf_counter() - t0) * 1000
     return float(score), latency_ms
+
+
+def _conformal_fields(score: float) -> dict:
+    """Map a fraud score to a conformal prediction set + confidence label.
+
+    Uses the exported LAC threshold t (models/conformal.json): a class is in
+    the 90%-coverage prediction set iff its probability >= t. For binary fraud:
+        score >= t        -> {fraud}  confident_fraud
+        score <= 1 - t    -> {legit}  confident_legit
+        otherwise         -> {}       uncertain (route to review)
+    """
+    cfg = state.conformal or {}
+    t = cfg.get("threshold")
+    if t is None:
+        return {"confidence_label": "unknown", "prediction_set": [],
+                "conformal_coverage": 0.0}
+    pred_set = []
+    if score >= t:
+        pred_set.append("fraud")
+    if (1.0 - score) >= t:
+        pred_set.append("legit")
+    if pred_set == ["fraud"]:
+        label = "confident_fraud"
+    elif pred_set == ["legit"]:
+        label = "confident_legit"
+    else:
+        label = "uncertain"
+    return {
+        "confidence_label": label,
+        "prediction_set": pred_set,
+        "conformal_coverage": float(cfg.get("confidence_level", 0.0)),
+    }
 
 
 def _match_rules(req: TransactionRequest) -> list[dict]:
@@ -363,6 +403,7 @@ async def score_transaction(req: TransactionRequest, request: Request):
             latency_ms=round(elapsed, 2),
             model_latency_ms=0.0,
             triggered_rules=[],
+            **_conformal_fields(1.0),
         )
 
     # ---- Velocity: record transaction then fetch canonical features ----
@@ -398,6 +439,7 @@ async def score_transaction(req: TransactionRequest, request: Request):
             latency_ms=round(elapsed, 2),
             model_latency_ms=0.0,
             triggered_rules=[],
+            **_conformal_fields(1.0),
         )
 
     # ---- Layer 2: ML scoring ----
@@ -433,6 +475,7 @@ async def score_transaction(req: TransactionRequest, request: Request):
         latency_ms=round(elapsed, 2),
         model_latency_ms=round(model_latency_ms, 2),
         triggered_rules=triggered_rules,
+        **_conformal_fields(fraud_score),
     )
     if hasattr(log, "info"):
         log.info("scored", decision=decision, score=fraud_score, latency_ms=elapsed)
