@@ -6,6 +6,7 @@ __pycache__/
 data/raw/
 data/processed/
 mlruns/
+catboost_info/
 models/*.pkl
 models/*.onnx
 models/*.json

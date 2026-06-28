@@ -86,8 +86,11 @@ def build_entity_graph(df: pd.DataFrame) -> nx.Graph:
     card_stats["is_fraud_node"] = (card_stats["fraud_count"] > 0).astype(int)
 
     for _, row in card_stats.iterrows():
+        # int() guards against pandas upcasting the big-integer cc_num to a
+        # float in mixed-dtype iterrows (which would name the node
+        # "card_<n>.0" and break edge matching + embedding lookup).
         G.add_node(
-            f"card_{row.cc_num}",
+            f"card_{int(row.cc_num)}",
             node_type="card",
             is_fraud_node=int(row.is_fraud_node),
             fraud_rate=float(row.fraud_rate),
