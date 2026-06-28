@@ -296,7 +296,7 @@ Reported under **two** protocols, transparently:
 ## Roadmap
 
 - **pgvector semantic RAG** — upgrade the copilot's keyword-grounded retrieval to embeddings-backed pgvector retrieval (kept off the free-tier serving box today because sentence-transformers pulls torch)
-- **GNN prediction dashboard** — the `/graph/elliptic` endpoint already serves the model's predictions, metrics, and a sampled subgraph; add a dashboard tab to render the force-graph + per-time-step illicit timeline
+- **Stream the GNN to production** — the dashboard's GNN Predictions tab and the `/graph/elliptic` endpoint are live; publishing the generated `elliptic_graph.json` to HF Hub lights it up on the deployed site
 
 ---
 
