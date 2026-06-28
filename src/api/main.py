@@ -759,6 +759,12 @@ async def health():
         "blocklist_size": len(state.known_fraud_cards),
         "rules_loaded": len(state.fraud_rules),
         "feature_cols": len(state.feature_cols),
+        # True when the backend can publish to Supabase (live feed + feedback
+        # mirror). Booleans only — never exposes the URL or key.
+        "supabase_configured": bool(settings.supabase_url and settings.supabase_key),
+        "live_feed_enabled": bool(
+            settings.live_feed_enabled and settings.supabase_url and settings.supabase_key
+        ),
     }
 
 
