@@ -72,6 +72,7 @@ class AppState:
     feature_cols: list[str] = []
     card_embeddings: dict = {}
     fraud_rules: list[dict] = []
+    rule_state_tokens: set[str] = set()
     known_fraud_cards: set[str] = set()
     velocity_store: VelocityFeatureStore | None = None
     shap_explainer = None
@@ -167,6 +168,12 @@ async def lifespan(app: FastAPI):
 
     # ---- Load FP-Growth rules ----
     state.fraud_rules = _load_json(os.path.join(MODELS_DIR, "fraud_rules.json"), default=[])
+    # Which states the rules keep as explicit items (others -> state_other).
+    state.rule_state_tokens = {
+        tok for rule in state.fraud_rules
+        for tok in (rule.get("antecedents") or [])
+        if tok.startswith("state_") and tok != "state_other"
+    }
 
     # ---- Load conformal calibration (uncertainty band) ----
     state.conformal = _load_json(os.path.join(MODELS_DIR, "conformal.json"), default={})
@@ -246,7 +253,8 @@ class TransactionRequest(BaseModel):
 
 
 class FraudRule(BaseModel):
-    antecedent: list[str]
+    antecedents: list[str]
+    consequents: list[str] = []
     confidence: float
     lift: float
     support: float
@@ -429,21 +437,45 @@ def _get_dice_explainer():
         return None
 
 
+# FP-Growth item vocabulary — must mirror src/rules/fp_growth_rules.py exactly,
+# since rules are matched by set membership against these tokens.
+_AMT_LOW, _AMT_HIGH = 50.0, 500.0
+_NIGHT_START, _NIGHT_END = 22, 6
+_GEO_FAR_KM = 50.0
+
+
+def _txn_items(req: TransactionRequest) -> set[str]:
+    """Discretize a transaction into the same string items the FP-Growth rules
+    were mined over (amt_/hour_/cat_/weekend/weekday/geo_/state_)."""
+    items: set[str] = set()
+    items.add("amt_low" if req.amt < _AMT_LOW
+              else "amt_medium" if req.amt <= _AMT_HIGH else "amt_high")
+    items.add("hour_night" if (req.hour >= _NIGHT_START or req.hour < _NIGHT_END)
+              else "hour_day")
+    if req.category:
+        items.add(f"cat_{req.category}")
+    items.add("weekend" if req.is_weekend else "weekday")
+    items.add("geo_far" if req.geo_distance_km >= _GEO_FAR_KM else "geo_near")
+    if req.state:
+        # The mined rules keep only the top fraud states as explicit items; any
+        # other state collapses to state_other (computed at startup).
+        tok = f"state_{req.state}"
+        items.add(tok if tok in state.rule_state_tokens else "state_other")
+    return items
+
+
 def _match_rules(req: TransactionRequest) -> list[dict]:
-    matched = []
-    for rule in state.fraud_rules:
-        ante = rule.get("antecedent", [])
-        hit = any(
-            (item == f"category={req.category}")
-            or (item == "hour=night" and req.is_night)
-            or (item == f"merchant={req.merchant}")
-            for item in ante
-        )
-        if hit:
-            matched.append(rule)
-        if len(matched) >= 3:
-            break
-    return matched
+    """Rules that fire for this transaction: every antecedent item is present
+    and the rule predicts FRAUD. Ranked by lift, top 3."""
+    items = _txn_items(req)
+    matched = [
+        rule for rule in state.fraud_rules
+        if "FRAUD" in (rule.get("consequents") or [])
+        and rule.get("antecedents")
+        and set(rule["antecedents"]).issubset(items)
+    ]
+    matched.sort(key=lambda r: r.get("lift", 0) or 0, reverse=True)
+    return matched[:3]
 
 
 def _shap_reasons(features: np.ndarray, vel: dict, score: float) -> list[str]:

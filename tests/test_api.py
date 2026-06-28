@@ -89,6 +89,22 @@ def test_feature_importance_endpoint(client):
     assert "features" in r.json()
 
 
+def test_triggered_rules_fire_for_known_pattern(client):
+    """A gas-transport transaction in a non-top state should match at least one
+    FP-Growth rule (e.g. antecedents {cat_gas_transport, state_other}). Skipped
+    in demo mode where no rules are loaded."""
+    if client.get("/health").json()["rules_loaded"] == 0:
+        return
+    d = client.post("/score", json={
+        "cc_num": "4222222222222222", "amt": 30.0, "category": "gas_transport",
+        "state": "CA", "hour": 23, "is_weekend": 0, "geo_distance_km": 80.0,
+    }).json()
+    assert len(d["triggered_rules"]) >= 1
+    for rule in d["triggered_rules"]:
+        assert "antecedents" in rule
+        assert "FRAUD" in rule.get("consequents", [])
+
+
 def test_elliptic_graph_endpoint(client):
     """Served GNN predictions endpoint returns a well-formed shape whether or
     not the artifact is present (empty defaults when it isn't)."""
