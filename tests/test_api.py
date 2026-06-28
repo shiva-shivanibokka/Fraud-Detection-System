@@ -105,6 +105,57 @@ def test_triggered_rules_fire_for_known_pattern(client):
         assert "FRAUD" in rule.get("consequents", [])
 
 
+def test_serving_reconstructs_categorical_features(client):
+    """Audit F1 regression: the model's categorical encodings must be computed
+    at serving (not fed as 0). Every non-velocity feature must be either present
+    in the raw dict or an intentionally-zero GNN embedding. Skipped in demo mode
+    (no encoders artifact)."""
+    from src.api import main
+    if not main.state.encoders or not main.state.feature_cols:
+        return
+    raw = main._raw_feature_dict(
+        main.TransactionRequest(
+            cc_num="4111111111111111", amt=100.0, category="gas_transport",
+            state="CA", gender="M", merchant="Test", timestamp=1750000000.0,
+        ),
+        {},
+    )
+    assert raw["category_enc"] != 0  # gas_transport encodes to a non-zero int
+    assert raw["state_enc"] != 0
+    assert raw["month"] >= 1
+    non_vel = [c for c in main.state.feature_cols if not c.startswith("vel_")]
+    covered = sum(1 for c in non_vel if c in raw or c.startswith("gnn_embed_"))
+    assert covered == len(non_vel)
+
+
+def test_category_affects_the_score(client):
+    """The category must actually influence the model now (it couldn't when
+    category_enc was always 0). Uses a moderate-risk amount where the model is
+    discriminating, and a fresh card per call so velocity doesn't confound."""
+    if not __import__("src.api.main", fromlist=["state"]).state.encoders:
+        return
+    cats = ["gas_transport", "grocery_pos", "shopping_net", "travel", "home"]
+    scores = set()
+    for i, c in enumerate(cats):
+        d = client.post("/score", json={
+            "cc_num": f"49999999999000{i}", "amt": 450.0, "category": c,
+            "hour": 14, "is_night": 0, "geo_distance_km": 40.0, "state": "CA", "age": 35,
+        }).json()
+        scores.add(d["fraud_score"])
+    assert len(scores) > 1  # category now genuinely shifts the score
+
+
+def test_blocklist_populates_from_entity_graph(client):
+    """Audit F2 regression: the blocklist must load fraud cards from the entity
+    graph (it was reading a non-existent ring_stats key and staying empty)."""
+    from src.api import main
+    nodes = client.get("/entity-graph").json().get("nodes", [])
+    fraud_cards = [n for n in nodes if n.get("type") == "card" and n.get("is_fraud")]
+    if not fraud_cards:
+        return
+    assert len(main.state.known_fraud_cards) > 0
+
+
 def test_elliptic_graph_endpoint(client):
     """Served GNN predictions endpoint returns a well-formed shape whether or
     not the artifact is present (empty defaults when it isn't)."""

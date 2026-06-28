@@ -11,6 +11,11 @@ data/elliptic/
 data/feedback.jsonl
 models/elliptic_graph.json
 models/entity_graph.json
+models/encoders.json
+
+# Local audit working docs (kept out of the public portfolio repo)
+AUDIT.md
+PLAN.md
 models/*.pkl
 models/*.onnx
 models/*.json

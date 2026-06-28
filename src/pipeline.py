@@ -113,7 +113,8 @@ def stage3_graph(
             }
             for n in G.nodes()
         ],
-        "edges": [
+        # Key is "links" to match the frontend + scripts/export_entity_graph.py.
+        "links": [
             {"source": u, "target": v, "type": G.edges[u, v].get("edge_type", "")}
             for u, v in G.edges()
         ],

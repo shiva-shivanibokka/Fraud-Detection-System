@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     fraud_threshold_review: float = 0.4
     fraud_threshold_decline: float = 0.8
 
+    # Layer-1 velocity hard cap: > this many transactions on one card within the
+    # last 60s is an automatic DECLINE (a business rule, kept here not hardcoded).
+    velocity_decline_cap: int = 5
+
     # Hugging Face Hub (model registry)
     hf_repo_id: str = ""
 

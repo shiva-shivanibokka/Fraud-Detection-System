@@ -1089,7 +1089,7 @@ function CaseReport() {
     try { setReport((await llmPost("/llm/case-report", { ring_id: idx })).report); }
     catch (e) { setError(e.message); } finally { setLoading(false); }
   };
-  const sizeOf = (r) => (r?.cards?.length ?? 0);
+  const sizeOf = (r) => (r?.n_cards ?? r?.cards?.length ?? 0);
   return (
     <Card style={{ marginBottom: 0 }}>
       <CardHead kicker="one-click" title="Ring Case Report" />

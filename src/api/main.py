@@ -70,7 +70,7 @@ class AppState:
     onnx_session = None
     joblib_model = None
     feature_cols: list[str] = []
-    card_embeddings: dict = {}
+    encoders: dict = {}
     fraud_rules: list[dict] = []
     rule_state_tokens: set[str] = set()
     known_fraud_cards: set[str] = set()
@@ -158,13 +158,11 @@ async def lifespan(app: FastAPI):
             "vel_ip_prefix_1min_count",
         ]
 
-    # ---- Load card embeddings ----
-    try:
-        import joblib
-
-        state.card_embeddings = joblib.load(os.path.join(MODELS_DIR, "card_embeddings.pkl")) or {}
-    except Exception:
-        state.card_embeddings = {}
+    # ---- Load categorical encoder maps (category/gender/state/merchant) ----
+    # The model expects *_enc features; these maps let serving reconstruct the
+    # exact encodings it was trained on (audit F1). GNN-embedding features stay
+    # zero, which is correct for unseen cards (matches training behavior).
+    state.encoders = _load_json(os.path.join(MODELS_DIR, "encoders.json"), default={})
 
     # ---- Load FP-Growth rules ----
     state.fraud_rules = _load_json(os.path.join(MODELS_DIR, "fraud_rules.json"), default=[])
@@ -181,15 +179,15 @@ async def lifespan(app: FastAPI):
     # ---- Load DICE counterfactual feature ranges (explainer built lazily) ----
     state.cf_ranges = _load_json(os.path.join(MODELS_DIR, "cf_ranges.json"), default={})
 
-    # ---- Build blocklist from ring stats ----
-    # ring_stats.json may be either a bare list of ring objects or a dict with a
-    # "rings" key. Normalize to a list so startup never crashes on either shape.
-    ring_stats = _load_json(os.path.join(MODELS_DIR, "ring_stats.json"), default={})
-    rings = ring_stats.get("rings", []) if isinstance(ring_stats, dict) else ring_stats
-    for ring in rings or []:
-        cards = ring.get("cards") if isinstance(ring, dict) else None
-        for card in cards or []:
-            state.known_fraud_cards.add(str(card))
+    # ---- Build blocklist from the entity graph's confirmed-fraud card nodes ----
+    # ring_stats.json holds only aggregate counts (no card lists), so it can't
+    # source the blocklist — the entity graph's card nodes carry is_fraud (F2).
+    egraph = _load_json(os.path.join(MODELS_DIR, "entity_graph.json"), default={})
+    for node in egraph.get("nodes", []) or []:
+        if isinstance(node, dict) and node.get("type") == "card" and node.get("is_fraud"):
+            cid = str(node.get("id", ""))
+            state.known_fraud_cards.add(cid[5:] if cid.startswith("card_") else cid)
+    logger.info("blocklist_loaded", size=len(state.known_fraud_cards))
 
     # ---- Velocity store (canonical: Redis or in-memory fallback) ----
     state.velocity_store = VelocityFeatureStore()
@@ -328,16 +326,39 @@ def _percentile(data: list[float], pct: int) -> float:
     return arr[min(idx, len(arr) - 1)]
 
 
+def _encode(field: str, value: str) -> float:
+    """Map a categorical value to the integer the model was trained on,
+    falling back to the field's modal encoding for unseen values."""
+    e = state.encoders.get(field)
+    if not e:
+        return 0.0
+    return float(e.get("map", {}).get(str(value), e.get("fallback", 0)))
+
+
 def _raw_feature_dict(req: TransactionRequest, vel: dict) -> dict:
+    if req.timestamp:
+        try:
+            month = dt.datetime.fromtimestamp(req.timestamp, dt.timezone.utc).month
+        except (OverflowError, OSError, ValueError):
+            month = dt.datetime.now(dt.timezone.utc).month
+    else:
+        month = dt.datetime.now(dt.timezone.utc).month
     return {
         "amt": req.amt,
         "hour": req.hour,
         "day_of_week": req.day_of_week,
+        "month": month,
         "is_weekend": req.is_weekend,
         "is_night": req.is_night,
         "age": req.age,
         "geo_distance_km": req.geo_distance_km,
         "city_pop": req.city_pop,
+        # Categorical encodings the model was trained on (audit F1). GNN-embedding
+        # features are intentionally left at 0 — correct for unseen cards.
+        "category_enc": _encode("category", req.category),
+        "gender_enc": _encode("gender", req.gender),
+        "state_enc": _encode("state", req.state),
+        "merchant_enc": _encode("merchant", req.merchant),
         **vel,  # all canonical velocity features from VelocityFeatureStore
     }
 
@@ -553,11 +574,17 @@ async def _publish_decision(req: "TransactionRequest", trans_id: str, decision: 
         logger.warning("live_feed_publish_failed", error=str(exc))
 
 
+_bg_tasks: set = set()
+
+
 def _emit_live(req: "TransactionRequest", trans_id: str, decision: str,
                score: float, layer: str) -> None:
-    """Schedule a fire-and-forget publish without blocking the response."""
+    """Schedule a fire-and-forget publish without blocking the response. Keep a
+    strong reference so the task isn't garbage-collected mid-flight (audit F6)."""
     try:
-        asyncio.create_task(_publish_decision(req, trans_id, decision, score, layer))
+        task = asyncio.create_task(_publish_decision(req, trans_id, decision, score, layer))
+        _bg_tasks.add(task)
+        task.add_done_callback(_bg_tasks.discard)
     except RuntimeError:
         pass  # no running loop (e.g. sync test context) — skip silently
 
@@ -612,7 +639,7 @@ async def score_transaction(req: TransactionRequest, request: Request):
     )
 
     # ---- Layer 1b: velocity hard cap ----
-    if vel.get("vel_card_1min_count", 0) > 5:
+    if vel.get("vel_card_1min_count", 0) > settings.velocity_decline_cap:
         elapsed = (time.perf_counter() - t_start) * 1000
         state.total_scored += 1
         state.decline_count += 1

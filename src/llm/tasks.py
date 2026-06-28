@@ -90,16 +90,19 @@ def build_context(
     top_categories = sorted(cat_signals.values(), key=lambda x: x["max_lift"], reverse=True)[:10]
 
     def ring_size(r: dict) -> int:
-        return len(r.get("cards", []) or []) if isinstance(r, dict) else 0
+        # ring_stats.json carries aggregate counts: n_cards / n_merchants /
+        # total_amt (no per-card lists) — read those, not "cards" (audit F3).
+        return int(r.get("n_cards", 0) or 0) if isinstance(r, dict) else 0
 
     top_rings = sorted(rings or [], key=ring_size, reverse=True)[:max_rings]
     ring_summ = [
         {
             "ring_id": r.get("ring_id", i),
             "cards": ring_size(r),
-            "shared_devices": len(r.get("devices", []) or []),
+            "merchants": int(r.get("n_merchants", 0) or 0),
             "fraud_rate": r.get("fraud_rate"),
-            "total_amount": r.get("total_amount"),
+            "total_amount": r.get("total_amt"),
+            "span_days": r.get("span_days"),
         }
         for i, r in enumerate(top_rings)
         if isinstance(r, dict)

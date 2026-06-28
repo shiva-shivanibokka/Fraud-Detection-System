@@ -44,7 +44,7 @@ def test_build_context_grounds_category_lift():
         question="which merchant categories have the highest fraud lift?",
         metrics={"total_scored": 5},
         rules=rules,
-        rings=[{"cards": ["a", "b"], "devices": ["d1"]}],
+        rings=[{"n_cards": 2, "n_merchants": 1}],
         feature_importance=[{"name": "amt", "importance": 0.3}],
         blocklist_size=7,
         thresholds={"review": 0.4, "decline": 0.8},
