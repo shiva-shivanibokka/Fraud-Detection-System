@@ -15,6 +15,50 @@ function getSupabase() {
   return _supabase;
 }
 
+// ---------------------------------------------------------------------------
+// Cold-start handling. The free-tier backend sleeps after ~15 min idle, so the
+// first request then takes 30-60s to wake. apiFetch keeps the request open long
+// enough to succeed, raises a global "waking up" banner if a call is slow, and
+// retries on hard failures (e.g. a brief redeploy window) before giving up.
+// ---------------------------------------------------------------------------
+let _waking = false;
+const _wakeSubs = new Set();
+function _setWaking(v) {
+  if (v !== _waking) {
+    _waking = v;
+    _wakeSubs.forEach((f) => f(v));
+  }
+}
+function useWaking() {
+  const [w, setW] = useState(_waking);
+  useEffect(() => {
+    _wakeSubs.add(setW);
+    return () => _wakeSubs.delete(setW);
+  }, []);
+  return w;
+}
+async function apiFetch(path, options = {}) {
+  const RETRIES = 3, SOFT_MS = 4000, HARD_MS = 70000;
+  let lastErr;
+  for (let attempt = 0; attempt <= RETRIES; attempt++) {
+    const ctrl = new AbortController();
+    const hard = setTimeout(() => ctrl.abort(), HARD_MS);
+    const soft = setTimeout(() => _setWaking(true), SOFT_MS); // banner if slow
+    try {
+      const res = await fetch(`${API}${path}`, { ...options, signal: ctrl.signal });
+      clearTimeout(hard); clearTimeout(soft); _setWaking(false);
+      return res;
+    } catch (e) {
+      clearTimeout(hard); clearTimeout(soft);
+      lastErr = e;
+      _setWaking(true);
+      if (attempt < RETRIES) await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
+    }
+  }
+  _setWaking(false);
+  throw new Error("The server isn’t responding. The free-tier backend may be waking up — please retry in a moment.");
+}
+
 const US_STATES = [
   "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA",
   "KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ",
@@ -148,7 +192,7 @@ function llmHeaders() {
   return { "X-LLM-Provider": c.provider, "X-LLM-Model": c.model, "X-LLM-Key": c.key };
 }
 async function llmPost(path, body) {
-  const res = await fetch(`${API}${path}`, {
+  const res = await apiFetch(path, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...llmHeaders() },
     body: JSON.stringify(body),
@@ -230,7 +274,7 @@ function FeedbackButtons({ result }) {
   const send = async (labelVal) => {
     setErr(null);
     try {
-      const res = await fetch(`${API}/feedback`, {
+      const res = await apiFetch("/feedback", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           trans_id: result.trans_id, decision: result.decision,
@@ -299,7 +343,7 @@ function LiveScoring() {
         age: 35, geo_distance_km: parseFloat(form.geo_distance_km) || 0,
         city_pop: 150000, state: form.state, gender: "M", timestamp: when.getTime() / 1000,
       };
-      const res = await fetch(`${API}/score`, {
+      const res = await apiFetch("/score", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -426,7 +470,7 @@ function FraudRingGraph() {
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    fetch(`${API}/entity-graph`).then((r) => r.json()).then(setGraphData).catch((e) => setError(e.message));
+    apiFetch("/entity-graph").then((r) => r.json()).then(setGraphData).catch((e) => setError(e.message));
   }, []);
 
   useEffect(() => {
@@ -514,7 +558,7 @@ function DriftMonitor() {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   useEffect(() => {
-    fetch(`${API}/drift`).then((r) => r.json()).then(setData).catch((e) => setError(e.message));
+    apiFetch("/drift").then((r) => r.json()).then(setData).catch((e) => setError(e.message));
   }, []);
   const months = data?.months ?? [];
   const intro = (
@@ -577,7 +621,7 @@ function RuleExplorer() {
   const [sortKey, setSortKey] = useState("lift");
   const [error, setError] = useState(null);
   useEffect(() => {
-    fetch(`${API}/fraud-rules`).then((r) => r.json()).then((d) => setRules(d.rules ?? [])).catch((e) => setError(e.message));
+    apiFetch("/fraud-rules").then((r) => r.json()).then((d) => setRules(d.rules ?? [])).catch((e) => setError(e.message));
   }, []);
   const sorted = [...rules].sort((a, b) => (b[sortKey] ?? 0) - (a[sortKey] ?? 0));
   const maxLift = Math.max(1, ...rules.map((r) => r.lift ?? 0));
@@ -737,7 +781,7 @@ function GNNTab() {
   const [d, setD] = useState(null);
   const [error, setError] = useState(null);
   useEffect(() => {
-    fetch(`${API}/graph/elliptic`).then((r) => r.json()).then(setD).catch((e) => setError(e.message));
+    apiFetch("/graph/elliptic").then((r) => r.json()).then(setD).catch((e) => setError(e.message));
   }, []);
   const intro = (
     <TabIntro title="GNN Predictions — graph fraud on real Bitcoin data">
@@ -955,7 +999,7 @@ function CaseReport() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   useEffect(() => {
-    fetch(`${API}/fraud-rings`).then((r) => r.json()).then((d) => setRings(Array.isArray(d) ? d : (d.rings || []))).catch(() => setRings([]));
+    apiFetch("/fraud-rings").then((r) => r.json()).then((d) => setRings(Array.isArray(d) ? d : (d.rings || []))).catch(() => setRings([]));
   }, []);
   const gen = async () => {
     setLoading(true); setError(null); setReport(null);
@@ -1026,7 +1070,7 @@ function Settings() {
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState(null);
   useEffect(() => {
-    fetch(`${API}/llm/providers`).then((r) => r.json()).then((d) => {
+    apiFetch("/llm/providers").then((r) => r.json()).then((d) => {
       const list = d.providers || [];
       setProviders(list);
       setCfg((c) => (!c.provider && list.length ? { ...c, provider: list[0].id, model: list[0].models[0] } : c));
@@ -1096,11 +1140,30 @@ const TABS = [
   ["Settings", Settings],
 ];
 
+// Global toast shown while a backend call is slow (free-tier cold start).
+function WakingBanner() {
+  const waking = useWaking();
+  if (!waking) return null;
+  return (
+    <div style={{
+      position: "fixed", bottom: 22, left: "50%", transform: "translateX(-50%)", zIndex: 100,
+      background: GRAD, color: "#fff", padding: "13px 24px", borderRadius: 12,
+      fontSize: 14, fontWeight: 600, fontFamily: FONT.display,
+      boxShadow: "0 16px 36px -10px rgba(38,50,90,0.45)",
+      display: "flex", alignItems: "center", gap: 11, maxWidth: "90vw",
+    }}>
+      <span style={{ fontSize: 16 }}>⏳</span>
+      Waking up the server… the free-tier backend sleeps when idle, so the first request can take up to a minute.
+    </div>
+  );
+}
+
 export default function App() {
   const [tab, setTab] = useState(0);
   const Active = TABS[tab][1];
   return (
     <div style={{ minHeight: "100vh", color: C.ink }}>
+      <WakingBanner />
       <header style={{ background: "rgba(255,255,255,0.8)", borderBottom: `1px solid ${C.border}`, padding: "0 28px", backdropFilter: "blur(10px)", position: "sticky", top: 0, zIndex: 10 }}>
         <div style={{ maxWidth: 1280, margin: "0 auto", display: "flex", alignItems: "center", gap: 28, flexWrap: "wrap" }}>
           <div style={{ padding: "16px 0", display: "flex", alignItems: "center", gap: 11 }}>
