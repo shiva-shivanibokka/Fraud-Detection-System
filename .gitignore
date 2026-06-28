@@ -9,6 +9,7 @@ mlruns/
 catboost_info/
 data/elliptic/
 data/feedback.jsonl
+models/elliptic_graph.json
 models/*.pkl
 models/*.onnx
 models/*.json

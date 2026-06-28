@@ -87,3 +87,14 @@ def test_feature_importance_endpoint(client):
     r = client.get("/feature-importance")
     assert r.status_code == 200
     assert "features" in r.json()
+
+
+def test_elliptic_graph_endpoint(client):
+    """Served GNN predictions endpoint returns a well-formed shape whether or
+    not the artifact is present (empty defaults when it isn't)."""
+    r = client.get("/graph/elliptic")
+    assert r.status_code == 200
+    d = r.json()
+    assert "metrics" in d
+    assert "graph" in d and "nodes" in d["graph"] and "links" in d["graph"]
+    assert isinstance(d["timeline"], list)

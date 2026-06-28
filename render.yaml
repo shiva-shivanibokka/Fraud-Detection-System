@@ -33,7 +33,20 @@ services:
       - key: CORS_ORIGINS
         value: '["http://localhost:5173","https://fraud-detection-system-ebon.vercel.app"]'
 
-      # --- Optional, set later in the Render dashboard ---
+      # --- Optional, set later in the Render dashboard (sync:false = secret) ---
       # Upstash Redis for persistent velocity across restarts (else in-memory):
       # - key: REDIS_URL
       #   sync: false
+      #
+      # Supabase — enables the analyst-feedback mirror + Realtime live feed.
+      # Run the supabase/migrations before turning these on.
+      # - key: SUPABASE_URL
+      #   sync: false
+      # - key: SUPABASE_KEY
+      #   sync: false
+      #
+      # Sentry error tracking (leave unset to disable):
+      # - key: SENTRY_DSN
+      #   sync: false
+      # - key: ENVIRONMENT
+      #   value: "production"
