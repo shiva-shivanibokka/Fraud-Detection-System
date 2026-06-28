@@ -45,6 +45,19 @@ class Settings(BaseSettings):
     # Deployed model version tag (used in /decisions records)
     model_version: str = "1.0.0"
 
+    # Observability — both optional; features no-op cleanly when unset.
+    # Sentry error tracking (FastAPI). Set SENTRY_DSN in the deploy env.
+    sentry_dsn: str = ""
+    # Deploy environment tag reported to Sentry ("production", "local", ...).
+    environment: str = "local"
+    # DagsHub / remote MLflow tracking URI for the offline training runs.
+    mlflow_tracking_uri: str = ""
+
+    # Live feed: best-effort insert of each decision into a Supabase table the
+    # frontend subscribes to via Realtime. Off unless Supabase is configured.
+    live_feed_enabled: bool = True
+    live_feed_table: str = "live_decisions"
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

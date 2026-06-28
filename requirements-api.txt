@@ -53,3 +53,6 @@ httpx==0.28.1
 
 # --- Structured logging ---
 structlog==26.1.0
+
+# --- Error tracking (optional; only active when SENTRY_DSN is set) ---
+sentry-sdk==2.21.0

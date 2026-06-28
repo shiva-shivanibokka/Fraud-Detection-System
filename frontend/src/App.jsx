@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import * as d3 from "d3";
+import { createClient } from "@supabase/supabase-js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -7,6 +8,16 @@ import * as d3 from "d3";
 // API base URL. In production (Vercel) this comes from VITE_API_URL
 // (see frontend/.env.production); locally it falls back to the dev server.
 const API = import.meta.env.VITE_API_URL || "http://localhost:8000";
+// Supabase Realtime (Live Feed tab). Optional — the tab degrades to a notice
+// when these aren't set. The anon key is a public, row-level-secured key.
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || "";
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
+let _supabase = null;
+function getSupabase() {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
+  if (!_supabase) _supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  return _supabase;
+}
 const US_STATES = [
   "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA",
   "KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ",
@@ -605,7 +616,93 @@ function RuleExplorer() {
 }
 
 // ---------------------------------------------------------------------------
-// Tab 5 — Settings (BYOK: provider + model + API key)
+// Tab 5 — Live Feed (Supabase Realtime stream of scored decisions)
+// ---------------------------------------------------------------------------
+function LiveFeed() {
+  const [rows, setRows] = useState([]);
+  const [status, setStatus] = useState("connecting");
+
+  useEffect(() => {
+    const sb = getSupabase();
+    if (!sb) { setStatus("unconfigured"); return; }
+
+    // Seed with the most recent decisions, then stream new INSERTs live.
+    sb.from("live_decisions").select("*").order("created_at", { ascending: false })
+      .limit(40)
+      .then(({ data }) => { if (data) setRows(data); });
+
+    const channel = sb
+      .channel("live_decisions_feed")
+      .on("postgres_changes",
+        { event: "INSERT", schema: "public", table: "live_decisions" },
+        (payload) => setRows((r) => [payload.new, ...r].slice(0, 60)))
+      .subscribe((s) => setStatus(s === "SUBSCRIBED" ? "live" : s.toLowerCase()));
+
+    return () => { sb.removeChannel(channel); };
+  }, []);
+
+  if (status === "unconfigured") {
+    return (
+      <div style={{ maxWidth: 620 }}>
+        <div style={needsKeyNote}>
+          📡 The Live Feed streams scored decisions over Supabase Realtime. Set
+          <code style={{ color: "#c4b5fd" }}> VITE_SUPABASE_URL</code> and
+          <code style={{ color: "#c4b5fd" }}> VITE_SUPABASE_ANON_KEY</code> in the
+          frontend env to enable it.
+        </div>
+      </div>
+    );
+  }
+
+  const dot = status === "live" ? "#22c55e" : "#d97706";
+  return (
+    <div style={card}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+        <h3 style={{ margin: 0, color: "#c4b5fd" }}>Live Transaction Feed</h3>
+        <div style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12, color: "#94a3b8" }}>
+          <span style={{ width: 9, height: 9, borderRadius: "50%", background: dot,
+            boxShadow: `0 0 7px ${dot}` }} />
+          {status === "live" ? "Live" : status}
+        </div>
+      </div>
+      {rows.length === 0 ? (
+        <div style={{ color: "#64748b", fontSize: 13, padding: "10px 0" }}>
+          Waiting for transactions… score one in the Live Scoring tab to see it appear here.
+        </div>
+      ) : (
+        <div style={{ display: "grid", gap: 6 }}>
+          {rows.map((r, i) => {
+            const c = decisionColor(r.decision);
+            const isFraud = r.decision === "DECLINE";
+            return (
+              <div key={r.id || i} style={{
+                display: "grid", gridTemplateColumns: "84px 1fr 90px 64px",
+                gap: 10, alignItems: "center", padding: "8px 12px", borderRadius: 6,
+                background: isFraud ? "#dc262618" : "#0f0f1a",
+                border: `1px solid ${isFraud ? "#dc2626" : "#1e1e2e"}`,
+                boxShadow: isFraud ? "0 0 10px #dc262633" : "none",
+              }}>
+                <span style={{ color: c, fontWeight: 700, fontSize: 13 }}>{r.decision}</span>
+                <span style={{ color: "#94a3b8", fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {r.merchant || "—"} · {r.category || "—"}
+                </span>
+                <span style={{ color: "#cbd5e1", fontSize: 12, textAlign: "right" }}>
+                  ${Number(r.amount ?? 0).toFixed(2)}
+                </span>
+                <span style={{ color: scoreGradient(r.fraud_score ?? 0), fontSize: 12, textAlign: "right", fontWeight: 600 }}>
+                  {((r.fraud_score ?? 0) * 100).toFixed(0)}%
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tab 6 — Settings (BYOK: provider + model + API key)
 // ---------------------------------------------------------------------------
 function Settings() {
   const [providers, setProviders] = useState([]);
@@ -863,7 +960,7 @@ function Copilot() {
 // ---------------------------------------------------------------------------
 // Root App
 // ---------------------------------------------------------------------------
-const TABS = ["Live Scoring", "Fraud Ring Graph", "Drift Monitor", "Rule Explorer", "Copilot", "Settings"];
+const TABS = ["Live Scoring", "Fraud Ring Graph", "Drift Monitor", "Rule Explorer", "Live Feed", "Copilot", "Settings"];
 
 export default function App() {
   const [tab, setTab] = useState(0);
@@ -897,8 +994,9 @@ export default function App() {
         {tab === 1 && <FraudRingGraph />}
         {tab === 2 && <DriftMonitor />}
         {tab === 3 && <RuleExplorer />}
-        {tab === 4 && <Copilot />}
-        {tab === 5 && <Settings />}
+        {tab === 4 && <LiveFeed />}
+        {tab === 5 && <Copilot />}
+        {tab === 6 && <Settings />}
       </div>
     </div>
   );

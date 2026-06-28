@@ -5,6 +5,7 @@ Layer 2: ML model scoring   (<20ms) via ONNX / joblib fallback
 Layer 3: SHAP explanation generation
 """
 
+import asyncio
 import collections
 import datetime as dt
 import json
@@ -36,6 +37,25 @@ except ImportError:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     logger = logging.getLogger("fraud_api")
+
+# ---------------------------------------------------------------------------
+# Sentry error tracking (optional — no-ops unless SENTRY_DSN is set).
+# ---------------------------------------------------------------------------
+if settings.sentry_dsn:
+    try:
+        import sentry_sdk
+
+        sentry_sdk.init(
+            dsn=settings.sentry_dsn,
+            environment=settings.environment,
+            traces_sample_rate=0.1,
+            # Never let PII (card numbers, keys) ride along in event payloads.
+            send_default_pii=False,
+        )
+        logger.info("sentry_initialized", environment=settings.environment)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("sentry_init_failed", error=str(exc))
+
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -466,6 +486,51 @@ def _shap_reasons(features: np.ndarray, vel: dict, score: float) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Live feed — best-effort publish of each decision to a Supabase table the
+# frontend subscribes to via Realtime. Fire-and-forget so it never adds latency
+# to /score, and a no-op unless Supabase is configured and the feed is enabled.
+# ---------------------------------------------------------------------------
+async def _publish_decision(req: "TransactionRequest", trans_id: str, decision: str,
+                            score: float, layer: str) -> None:
+    if not (settings.live_feed_enabled and settings.supabase_url and settings.supabase_key):
+        return
+    record = {
+        "trans_id": trans_id,
+        "decision": decision,
+        "fraud_score": round(float(score), 4),
+        "amount": req.amt,
+        "merchant": req.merchant,
+        "category": req.category,
+        "hour": req.hour,
+        "layer": layer,
+        "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+    }
+    try:
+        import httpx
+
+        url = f"{settings.supabase_url.rstrip('/')}/rest/v1/{settings.live_feed_table}"
+        headers = {
+            "apikey": settings.supabase_key,
+            "Authorization": f"Bearer {settings.supabase_key}",
+            "Content-Type": "application/json",
+            "Prefer": "return=minimal",
+        }
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            await client.post(url, json=record, headers=headers)
+    except Exception as exc:  # noqa: BLE001 — never let the feed affect scoring
+        logger.warning("live_feed_publish_failed", error=str(exc))
+
+
+def _emit_live(req: "TransactionRequest", trans_id: str, decision: str,
+               score: float, layer: str) -> None:
+    """Schedule a fire-and-forget publish without blocking the response."""
+    try:
+        asyncio.create_task(_publish_decision(req, trans_id, decision, score, layer))
+    except RuntimeError:
+        pass  # no running loop (e.g. sync test context) — skip silently
+
+
+# ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 @app.post("/score", response_model=ScoreResponse)
@@ -483,6 +548,7 @@ async def score_transaction(req: TransactionRequest, request: Request):
         state.total_scored += 1
         state.decline_count += 1
         state.latency_history.append(elapsed)
+        _emit_live(req, trans_id, "DECLINE", 1.0, "rules")
         return ScoreResponse(
             trans_id=trans_id,
             decision="DECLINE",
@@ -519,6 +585,7 @@ async def score_transaction(req: TransactionRequest, request: Request):
         state.total_scored += 1
         state.decline_count += 1
         state.latency_history.append(elapsed)
+        _emit_live(req, trans_id, "DECLINE", 1.0, "rules")
         return ScoreResponse(
             trans_id=trans_id,
             decision="DECLINE",
@@ -566,6 +633,7 @@ async def score_transaction(req: TransactionRequest, request: Request):
         triggered_rules=triggered_rules,
         **_conformal_fields(fraud_score),
     )
+    _emit_live(req, trans_id, decision, fraud_score, "model")
     if hasattr(log, "info"):
         log.info("scored", decision=decision, score=fraud_score, latency_ms=elapsed)
     return resp

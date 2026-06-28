@@ -263,6 +263,13 @@ def train_fraud_model(
     n_neg = len(y_train) - n_pos
     print(f"[model] Train: {len(y_train):,} | Fraud: {n_pos:,} ({n_pos / len(y_train):.4f})")
 
+    # DagsHub (or any remote MLflow): point the tracking URI at it when set,
+    # otherwise MLflow logs to the local ./mlruns. One env var flips local->remote.
+    from src.config import settings
+
+    if settings.mlflow_tracking_uri:
+        mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
+        print(f"[model] MLflow tracking -> {settings.mlflow_tracking_uri}")
     mlflow.set_experiment(experiment_name)
 
     with mlflow.start_run(run_name="XGBoost_ONNX_Fraud"):
