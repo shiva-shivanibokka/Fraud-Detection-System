@@ -514,7 +514,7 @@ function LiveScoring() {
 }
 
 // ---------------------------------------------------------------------------
-// Tab — Fraud Ring Graph (D3 force-directed)
+// Tab — Fraud Rings (ranked list + focused single-ring view + case report)
 // ---------------------------------------------------------------------------
 const RING_PALETTE = [
   "#4F46E5", "#0EA5E9", "#EC4899", "#10B981", "#F59E0B", "#8B5CF6",
@@ -522,97 +522,145 @@ const RING_PALETTE = [
 ];
 const ringColor = (i) => RING_PALETTE[(i ?? 0) % RING_PALETTE.length];
 
-function FraudRingGraph({ onRingClick }) {
+// Clean force diagram of ONE ring: its cards (colored) + shared devices (grey).
+function RingDiagram({ nodes, links, color }) {
   const svgRef = useRef(null);
-  const [hoveredNode, setHoveredNode] = useState(null);
-  const [graphData, setGraphData] = useState(null);
-  const [error, setError] = useState(null);
-
   useEffect(() => {
-    apiFetch("/entity-graph").then((r) => r.json()).then(setGraphData).catch((e) => setError(e.message));
-  }, []);
-
-  useEffect(() => {
-    if (!graphData || !svgRef.current) return;
-    const nodes = (graphData.nodes || []).map((n) => ({ ...n }));
-    const links = (graphData.links || graphData.edges || []).map((l) => ({ ...l }));
-    if (!nodes.length) return;
-    const W = svgRef.current.parentElement.clientWidth || 700, H = 520;
-    // Lay the rings out on a grid so each disconnected cluster gets its own cell.
-    const nRings = Math.max(1, new Set(nodes.map((n) => n.ring_index)).size);
-    const cols = Math.ceil(Math.sqrt(nRings * (W / H)));
-    const rows = Math.ceil(nRings / cols);
-    const cx = (i) => ((i % cols) + 0.5) * (W / cols);
-    const cy = (i) => (Math.floor(i / cols) + 0.5) * (H / rows);
-
+    if (!svgRef.current) return;
+    const N = (nodes || []).map((n) => ({ ...n }));
+    const L = (links || []).map((l) => ({ ...l }));
     d3.select(svgRef.current).selectAll("*").remove();
+    if (!N.length) return;
+    const W = svgRef.current.parentElement.clientWidth || 420, H = 300;
     const svg = d3.select(svgRef.current).attr("width", W).attr("height", H);
     const g = svg.append("g");
-    svg.call(d3.zoom().scaleExtent([0.3, 5]).on("zoom", (e) => g.attr("transform", e.transform)));
-
-    const sim = d3.forceSimulation(nodes)
-      .force("link", d3.forceLink(links).id((d) => d.id).distance(34).strength(0.7))
-      .force("charge", d3.forceManyBody().strength(-70))
-      .force("x", d3.forceX((d) => cx(d.ring_index)).strength(0.28))
-      .force("y", d3.forceY((d) => cy(d.ring_index)).strength(0.28))
-      .force("collision", d3.forceCollide((d) => (d.type === "card" ? 12 : 7)));
-
-    const link = g.append("g").selectAll("line").data(links).join("line")
-      .attr("stroke", "#CBD2E4").attr("stroke-width", 1.2);
-    const node = g.append("g").selectAll("circle").data(nodes).join("circle")
-      .attr("r", (d) => (d.type === "card" ? 6 + Math.min(13, Math.sqrt(d.txn_count ?? 1)) : 5))
-      .attr("fill", (d) => (d.type === "device" ? "#B6BFD4" : ringColor(d.ring_index)))
-      .attr("stroke", "#fff").attr("stroke-width", 1.8).attr("cursor", "pointer")
-      .on("mouseover", (_, d) => setHoveredNode(d)).on("mouseout", () => setHoveredNode(null))
-      .on("click", (_, d) => onRingClick?.(d.ring_id))
+    svg.call(d3.zoom().scaleExtent([0.4, 4]).on("zoom", (e) => g.attr("transform", e.transform)));
+    const sim = d3.forceSimulation(N)
+      .force("link", d3.forceLink(L).id((d) => d.id).distance(80))
+      .force("charge", d3.forceManyBody().strength(-280))
+      .force("center", d3.forceCenter(W / 2, H / 2))
+      .force("collision", d3.forceCollide(28));
+    const link = g.append("g").selectAll("line").data(L).join("line").attr("stroke", "#CBD2E4").attr("stroke-width", 1.5);
+    const node = g.append("g").selectAll("g").data(N).join("g").attr("cursor", "grab")
       .call(d3.drag()
         .on("start", (e, d) => { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
         .on("drag", (e, d) => { d.fx = e.x; d.fy = e.y; })
         .on("end", (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }));
+    node.append("circle").attr("r", (d) => (d.type === "card" ? 15 : 10))
+      .attr("fill", (d) => (d.type === "device" ? "#B6BFD4" : color)).attr("stroke", "#fff").attr("stroke-width", 2);
+    node.append("text").text((d) => (d.type === "card" ? `••${String(d.id).slice(-4)}` : "device"))
+      .attr("text-anchor", "middle").attr("dy", (d) => (d.type === "card" ? 30 : 24))
+      .attr("font-size", 10).attr("font-family", FONT.mono).attr("fill", C.muted);
     sim.on("tick", () => {
       link.attr("x1", (d) => d.source.x).attr("y1", (d) => d.source.y).attr("x2", (d) => d.target.x).attr("y2", (d) => d.target.y);
-      node.attr("cx", (d) => d.x).attr("cy", (d) => d.y);
+      node.attr("transform", (d) => `translate(${d.x},${d.y})`);
     });
     return () => sim.stop();
-  }, [graphData]);
+  }, [nodes, links, color]);
+  return <svg ref={svgRef} style={{ background: "#FBFCFE", borderRadius: 14, width: "100%", border: `1px solid ${C.border}` }} />;
+}
 
-  const nRings = graphData ? new Set((graphData.nodes || []).map((n) => n.ring_id)).size : 0;
+function FraudRings() {
+  const [rings, setRings] = useState([]);
+  const [graph, setGraph] = useState(null);
+  const [sel, setSel] = useState(0);
+  const [sortKey, setSortKey] = useState("n_cards");
+  const [error, setError] = useState(null);
+  const [report, setReport] = useState(null);
+  const [rLoading, setRLoading] = useState(false);
+  const [rErr, setRErr] = useState(null);
+
+  useEffect(() => {
+    apiFetch("/fraud-rings").then((r) => r.json()).then((d) => setRings(Array.isArray(d) ? d : (d.rings || []))).catch((e) => setError(e.message));
+    apiFetch("/entity-graph").then((r) => r.json()).then(setGraph).catch(() => {});
+  }, []);
+  useEffect(() => { setReport(null); setRErr(null); }, [sel]);
+
+  const ranked = rings.map((r, i) => ({ ...r, _i: i })).sort((a, b) => (b[sortKey] ?? 0) - (a[sortKey] ?? 0));
+  const ring = rings[sel];
+  const ringNodes = (graph?.nodes || []).filter((n) => n.ring_id === ring?.ring_id);
+  const idset = new Set(ringNodes.map((n) => n.id));
+  const ringLinks = (graph?.links || []).filter((l) => idset.has(l.source?.id ?? l.source) && idset.has(l.target?.id ?? l.target));
+  const money = (v) => `$${Math.round(v ?? 0).toLocaleString()}`;
+
+  const genReport = async () => {
+    setRLoading(true); setRErr(null); setReport(null);
+    try { setReport((await llmPost("/llm/case-report", { ring_id: sel })).report); }
+    catch (e) { setRErr(e.message); } finally { setRLoading(false); }
+  };
+
   return (
     <>
-      <TabIntro title="Fraud Ring Graph — the detected fraud rings">
-        Each colored cluster below is one fraud ring: a group of cards (large dots) that share a device
-        (small grey hub) — the classic signal of organized fraud. Drag to explore, scroll to zoom, hover for
-        stats, or <b>click any ring to open its case report</b> in the AI Assistant.
+      <TabIntro title="Fraud Rings — organized-fraud clusters">
+        A fraud ring is a group of cards that share a device — a hallmark of organized fraud. Pick a ring from
+        the ranked list to see its card/device structure and key stats, then generate an AI case report for it.
       </TabIntro>
-      <Card>
-        <CardHead kicker="entity network" title="Fraud Ring Graph"
-          right={<span style={{ ...label, marginBottom: 0 }}>{nRings} rings</span>} />
-        <div style={{ display: "flex", gap: 18, marginBottom: 14, fontSize: 13, color: C.muted, flexWrap: "wrap", fontFamily: FONT.mono, alignItems: "center" }}>
-          <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <span style={{ width: 14, height: 14, borderRadius: "50%", background: ringColor(0) }} />
-            <span style={{ width: 14, height: 14, borderRadius: "50%", background: ringColor(2), marginLeft: -4 }} />
-            card (color = its ring)
-          </span>
-          <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <span style={{ width: 9, height: 9, borderRadius: "50%", background: "#B6BFD4" }} /> shared device
-          </span>
-        </div>
-        {error
-          ? <div style={{ color: C.decline, padding: 20 }}>Failed to load graph: {error}. Ensure the API is running.</div>
-          : <div style={{ position: "relative" }}>
-              <svg ref={svgRef} style={{ background: "#FBFCFE", borderRadius: 14, width: "100%", border: `1px solid ${C.border}` }} />
-              {hoveredNode && (
-                <div className="glass" style={{ position: "absolute", top: 12, left: 12, padding: "12px 16px", fontSize: 13, fontFamily: FONT.mono }}>
-                  <div style={{ color: ringColor(hoveredNode.ring_index), fontWeight: 700, marginBottom: 4 }}>{hoveredNode.ring_id}</div>
-                  <div style={{ color: C.muted }}>{hoveredNode.type === "card" ? "card" : "shared device"}</div>
-                  <div style={{ color: C.muted }}>txns: {hoveredNode.txn_count ?? "—"}</div>
-                  {hoveredNode.type === "card" && (
-                    <div style={{ color: C.muted }}>fraud rate: {((hoveredNode.fraud_rate ?? 0) * 100).toFixed(1)}%</div>
-                  )}
+      <div className="grid-rings">
+        {/* Ranked list */}
+        <Card style={{ marginBottom: 0 }}>
+          <CardHead kicker={`${rings.length} detected`} title="Rings"
+            right={
+              <select style={{ ...input, width: "auto", padding: "7px 10px", fontSize: 13 }} value={sortKey} onChange={(e) => setSortKey(e.target.value)}>
+                <option value="n_cards">most cards</option>
+                <option value="total_amt">highest exposure</option>
+                <option value="fraud_rate">highest fraud rate</option>
+              </select>
+            } />
+          {error ? <div style={{ color: C.decline }}>{error}</div>
+            : <div style={{ maxHeight: 560, overflowY: "auto", display: "grid", gap: 8 }}>
+                {ranked.map((r) => {
+                  const active = r._i === sel;
+                  return (
+                    <button key={r.ring_id} onClick={() => setSel(r._i)} style={{
+                      textAlign: "left", cursor: "pointer", borderRadius: 12, padding: "12px 14px",
+                      border: `1px solid ${active ? ringColor(r._i) : C.border}`,
+                      borderLeft: `4px solid ${ringColor(r._i)}`,
+                      background: active ? ringColor(r._i) + "12" : "#fff",
+                    }}>
+                      <div style={{ fontFamily: FONT.display, fontWeight: 700, color: C.ink, fontSize: 14 }}>{r.ring_id}</div>
+                      <div style={{ fontFamily: FONT.mono, fontSize: 12, color: C.muted, marginTop: 3 }}>
+                        {r.n_cards} cards · {r.n_merchants} merchants · {money(r.total_amt)}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>}
+        </Card>
+
+        {/* Selected ring detail */}
+        <Card style={{ marginBottom: 0 }}>
+          {!ring ? <div style={{ color: C.faint, padding: 30, fontFamily: FONT.mono }}>Loading rings…</div>
+            : <>
+                <CardHead kicker="ring detail" title={ring.ring_id}
+                  right={<span style={{ ...label, marginBottom: 0, color: ringColor(sel) }}>ring #{sel + 1}</span>} />
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
+                  {[["cards", ring.n_cards], ["merchants", ring.n_merchants], ["states", ring.n_states],
+                    ["exposure", money(ring.total_amt)], ["span", `${ring.span_days}d`],
+                    ["fraud rate", `${((ring.fraud_rate ?? 0) * 100).toFixed(2)}%`]].map(([k, v]) => (
+                    <div key={k} style={{ background: C.field, border: `1px solid ${C.border}`, borderRadius: 11, padding: "10px 14px", flex: "1 1 90px" }}>
+                      <div style={{ fontFamily: FONT.mono, fontSize: 16, fontWeight: 700, color: C.ink }}>{v}</div>
+                      <div style={{ ...eyebrow, color: C.faint, fontSize: 10, marginTop: 2 }}>{k}</div>
+                    </div>
+                  ))}
                 </div>
-              )}
-            </div>}
-      </Card>
+                <RingDiagram nodes={ringNodes} links={ringLinks} color={ringColor(sel)} />
+                <div style={{ display: "flex", gap: 16, marginTop: 10, fontSize: 12.5, color: C.muted, fontFamily: FONT.mono }}>
+                  <span style={{ display: "flex", gap: 6, alignItems: "center" }}><span style={{ width: 13, height: 13, borderRadius: "50%", background: ringColor(sel) }} /> card</span>
+                  <span style={{ display: "flex", gap: 6, alignItems: "center" }}><span style={{ width: 10, height: 10, borderRadius: "50%", background: "#B6BFD4" }} /> shared device</span>
+                </div>
+                <div style={{ marginTop: 18, borderTop: `1px solid ${C.border}`, paddingTop: 16 }}>
+                  <div style={{ ...eyebrow, color: C.faint, marginBottom: 10 }}>ai case report</div>
+                  {!hasLLMConfig()
+                    ? <div style={{ ...notice, padding: "14px 16px", fontSize: 13.5 }}>🔑 Add your LLM key in the <b>Settings</b> tab to generate a case report for this ring.</div>
+                    : <>
+                        <button style={btn("primary")} onClick={genReport} disabled={rLoading}>{rLoading ? "Writing…" : "Generate case report"}</button>
+                        {rErr && <div style={{ marginTop: 10, color: C.decline, fontSize: 13 }}>{rErr}</div>}
+                        {report && <div style={{ ...llmText, marginTop: 14 }}>{report}</div>}
+                      </>}
+                </div>
+              </>}
+        </Card>
+      </div>
     </>
   );
 }
@@ -620,6 +668,38 @@ function FraudRingGraph({ onRingClick }) {
 // ---------------------------------------------------------------------------
 // Tab — Drift Monitor
 // ---------------------------------------------------------------------------
+function DriftChart({ months, label: lab, valueKey, lo, hi, color, fmt }) {
+  const W = 760, H = 190, p = { top: 14, right: 20, bottom: 40, left: 46 };
+  const iW = W - p.left - p.right, iH = H - p.top - p.bottom;
+  const x = (i) => (i / (months.length - 1 || 1)) * iW;
+  const clamp = (v) => Math.max(lo, Math.min(hi, v ?? lo));
+  const y = (v) => iH - ((clamp(v) - lo) / (hi - lo)) * iH;
+  const path = months.map((m, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(m[valueKey]).toFixed(1)}`).join(" ");
+  return (
+    <div style={{ marginBottom: 6 }}>
+      <div style={{ ...eyebrow, color: C.faint, marginBottom: 6 }}>{lab}</div>
+      <svg width="100%" viewBox={`0 0 ${W} ${H}`}>
+        <g transform={`translate(${p.left},${p.top})`}>
+          {[lo, (lo + hi) / 2, hi].map((v) => (
+            <g key={v}>
+              <line x1={0} x2={iW} y1={y(v)} y2={y(v)} stroke="#EDF0F7" />
+              <text x={-8} y={y(v) + 4} fill={C.faint} fontSize={10} textAnchor="end" fontFamily={FONT.mono}>{fmt(v)}</text>
+            </g>
+          ))}
+          <path d={`${path} L ${x(months.length - 1)},${iH} L 0,${iH} Z`} fill={color + "14"} stroke="none" />
+          <path d={path} fill="none" stroke={color} strokeWidth={2.5} />
+          {months.map((m, i) => (
+            <circle key={i} cx={x(i)} cy={y(m[valueKey])} r={4} fill={color} stroke="#fff" strokeWidth={1.5} />
+          ))}
+          {months.map((m, i) => (
+            <text key={i} x={x(i)} y={iH + 22} fill={C.faint} fontSize={10} textAnchor="middle" fontFamily={FONT.mono} transform={`rotate(-40,${x(i)},${iH + 22})`}>{m.month ?? `M${i + 1}`}</text>
+          ))}
+        </g>
+      </svg>
+    </div>
+  );
+}
+
 function DriftMonitor() {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
@@ -628,52 +708,27 @@ function DriftMonitor() {
   }, []);
   const months = Array.isArray(data) ? data : (data?.months ?? []);
   const intro = (
-    <TabIntro title="Drift Monitor — is the model still accurate?">
-      Concept drift means fraud patterns shift and a model silently goes stale. This tracks test AUC month by
-      month: green segments are healthy, <b>red segments dropped below the 0.85 retrain threshold</b>. The
-      dashed line is precision@1%. A run of red is the signal to retrain.
+    <TabIntro title="Drift Monitor — is the model still accurate over time?">
+      Concept drift is when fraud patterns shift and a model silently degrades. <b>Top:</b> monthly test AUC —
+      it has held around 0.99, so there's no drift (the model stays sharp). <b>Bottom:</b> precision@1% (how
+      many of the top-1% riskiest-scored transactions were truly fraud) — noisier, because each month has only
+      ~50–120 fraud cases. A sustained drop in either is the signal to retrain.
     </TabIntro>
   );
   if (!months.length && !error) return <>{intro}<Card style={{ color: C.faint }}>Loading drift data…</Card></>;
   if (error) return <>{intro}<Card style={{ color: C.decline }}>Failed: {error}</Card></>;
 
-  const W = 760, H = 280, p = { top: 20, right: 26, bottom: 54, left: 52 };
-  const iW = W - p.left - p.right, iH = H - p.top - p.bottom;
-  const xScale = (i) => (i / (months.length - 1 || 1)) * iW;
-  const yScale = (v) => iH - ((v - 0.6) / 0.4) * iH;
-  const linePath = (key) => months.map((m, i) => `${i === 0 ? "M" : "L"}${xScale(i).toFixed(1)},${yScale(m[key] ?? 0).toFixed(1)}`).join(" ");
+  const avgAuc = months.reduce((s, m) => s + (m.auc ?? 0), 0) / months.length;
   return (
     <>
       {intro}
       <Card>
-        <CardHead kicker="model health" title="Model AUC over time" />
-        <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ overflow: "visible" }}>
-          <g transform={`translate(${p.left},${p.top})`}>
-            {[0.6, 0.7, 0.8, 0.85, 0.9, 1.0].map((v) => (
-              <g key={v}>
-                <line x1={0} x2={iW} y1={yScale(v)} y2={yScale(v)} stroke="#EDF0F7" />
-                <text x={-10} y={yScale(v) + 4} fill={C.faint} fontSize={11} textAnchor="end" fontFamily={FONT.mono}>{v.toFixed(2)}</text>
-              </g>
-            ))}
-            <line x1={0} x2={iW} y1={yScale(0.85)} y2={yScale(0.85)} stroke={C.decline} strokeWidth={1} strokeDasharray="4 3" />
-            {months.slice(1).map((m, i) => {
-              const prev = months[i], avg = ((m.auc ?? 0) + (prev.auc ?? 0)) / 2;
-              return <line key={i} x1={xScale(i)} y1={yScale(prev.auc ?? 0)} x2={xScale(i + 1)} y2={yScale(m.auc ?? 0)} stroke={avg < 0.85 ? C.decline : C.approve} strokeWidth={3} />;
-            })}
-            <path d={linePath("precision_at_1pct")} fill="none" stroke={C.sky} strokeWidth={2} strokeDasharray="5 3" />
-            {months.map((m, i) => (
-              <circle key={i} cx={xScale(i)} cy={yScale(m.auc ?? 0)} r={4.5} fill={(m.auc ?? 1) < 0.85 ? C.decline : C.approve} stroke="#fff" strokeWidth={1.5} />
-            ))}
-            {months.map((m, i) => (
-              <text key={i} x={xScale(i)} y={iH + 24} fill={C.faint} fontSize={11} textAnchor="middle" fontFamily={FONT.mono} transform={`rotate(-40,${xScale(i)},${iH + 24})`}>{m.month ?? `M${i + 1}`}</text>
-            ))}
-          </g>
-        </svg>
-        <div style={{ display: "flex", gap: 22, marginTop: 10, fontSize: 13, color: C.muted, flexWrap: "wrap", fontFamily: FONT.mono }}>
-          <span style={{ display: "flex", gap: 6, alignItems: "center" }}><span style={{ width: 22, height: 3, background: C.approve }} /> AUC ≥ 0.85</span>
-          <span style={{ display: "flex", gap: 6, alignItems: "center" }}><span style={{ width: 22, height: 3, background: C.decline }} /> AUC &lt; 0.85</span>
-          <span style={{ display: "flex", gap: 6, alignItems: "center" }}><span style={{ width: 22, height: 3, background: C.sky }} /> precision@1%</span>
-        </div>
+        <CardHead kicker="model health · 2020" title="Performance over time"
+          right={<span style={{ ...label, marginBottom: 0, color: C.approve }}>avg AUC {avgAuc.toFixed(3)}</span>} />
+        <DriftChart months={months} label="Test AUC (0.90–1.00) — stable, no drift" valueKey="auc"
+          lo={0.9} hi={1.0} color={C.approve} fmt={(v) => v.toFixed(2)} />
+        <DriftChart months={months} label="Precision@1% (0–100%) — noisy on small monthly samples" valueKey="precision_at_1pct"
+          lo={0} hi={1.0} color={C.sky} fmt={(v) => `${(v * 100).toFixed(0)}%`} />
       </Card>
     </>
   );
@@ -1086,56 +1141,13 @@ function RuleFromText() {
   );
 }
 
-function CaseReport({ jumpRing, clearJump }) {
-  const [rings, setRings] = useState([]);
-  const [idx, setIdx] = useState(0);
-  const [report, setReport] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-  useEffect(() => {
-    apiFetch("/fraud-rings").then((r) => r.json()).then((d) => setRings(Array.isArray(d) ? d : (d.rings || []))).catch(() => setRings([]));
-  }, []);
-  const gen = async (index = idx) => {
-    setLoading(true); setError(null); setReport(null);
-    try { setReport((await llmPost("/llm/case-report", { ring_id: index })).report); }
-    catch (e) { setError(e.message); } finally { setLoading(false); }
-  };
-  // Clicked a ring in the graph -> select it here and generate its report.
-  useEffect(() => {
-    if (!jumpRing || !rings.length) return;
-    const i = rings.findIndex((r) => r.ring_id === jumpRing);
-    clearJump?.();
-    if (i >= 0) { setIdx(i); gen(i); }
-  }, [jumpRing, rings]);
-  const sizeOf = (r) => (r?.n_cards ?? r?.cards?.length ?? 0);
-  return (
-    <Card style={{ marginBottom: 0 }}>
-      <CardHead kicker="one-click" title="Ring Case Report" />
-      <p style={sub}>An investigator narrative generated from a detected fraud ring’s statistics.</p>
-      {rings.length === 0 ? <div style={{ color: C.faint, fontSize: 14 }}>No fraud rings available.</div>
-        : <>
-            <div style={{ display: "flex", gap: 12, alignItems: "flex-end" }}>
-              <div style={{ flex: 1 }}>
-                <span style={label}>Ring</span>
-                <select style={input} value={idx} onChange={(e) => setIdx(parseInt(e.target.value, 10))}>
-                  {rings.map((r, i) => <option key={i} value={i}>{r.ring_id || `Ring #${i}`} — {sizeOf(r)} cards</option>)}
-                </select>
-              </div>
-              <button style={btn("primary")} onClick={() => gen()} disabled={loading}>{loading ? "Writing…" : "Generate"}</button>
-            </div>
-            {error && <div style={{ marginTop: 12, color: C.decline, fontSize: 14 }}>{error}</div>}
-            {report && <div style={{ ...llmText, marginTop: 16 }}>{report}</div>}
-          </>}
-    </Card>
-  );
-}
-
-function AIAssistant({ jumpRing, clearJump }) {
+function AIAssistant() {
   const intro = (
     <TabIntro title="AI Assistant — your fraud copilot (bring your own key)">
-      A language model wired to this system: ask questions grounded in the live fraud data, turn plain-English
-      policies into structured rules, and generate investigator case reports. Add your OpenAI or Groq key in
-      <b> Settings</b> first — it stays in your browser and is never stored on the server.
+      A language model wired to this system: ask questions grounded in the live fraud data, and turn
+      plain-English policies into structured rules. Add your OpenAI / Anthropic / Gemini / Groq key in
+      <b> Settings</b> first — it stays in your browser, never on the server. (Per-ring case reports live in
+      the <b>Fraud Rings</b> tab.)
     </TabIntro>
   );
   if (!hasLLMConfig()) {
@@ -1143,7 +1155,7 @@ function AIAssistant({ jumpRing, clearJump }) {
       <>
         {intro}
         <div style={notice}>
-          🔑 Add your LLM provider and API key in the <b>Settings</b> tab to enable the assistant, rule editor, and case reports.
+          🔑 Add your LLM provider and API key in the <b>Settings</b> tab to enable the assistant and rule editor.
         </div>
       </>
     );
@@ -1153,10 +1165,7 @@ function AIAssistant({ jumpRing, clearJump }) {
       {intro}
       <div style={{ display: "grid", gap: 20 }}>
         <CopilotChat />
-        <div className="grid-2">
-          <RuleFromText />
-          <CaseReport jumpRing={jumpRing} clearJump={clearJump} />
-        </div>
+        <RuleFromText />
       </div>
     </>
   );
@@ -1248,7 +1257,7 @@ function Settings() {
 // ---------------------------------------------------------------------------
 const TABS = [
   ["Live Scoring", LiveScoring],
-  ["Fraud Ring Graph", FraudRingGraph],
+  ["Fraud Rings", FraudRings],
   ["GNN Predictions", GNNTab],
   ["Drift Monitor", DriftMonitor],
   ["Rule Explorer", RuleExplorer],
@@ -1275,11 +1284,8 @@ function WakingBanner() {
   );
 }
 
-const AI_TAB = TABS.findIndex(([n]) => n === "AI Assistant");
-
 export default function App() {
   const [tab, setTab] = useState(0);
-  const [jumpRing, setJumpRing] = useState(null);
   const Active = TABS[tab][1];
   return (
     <div style={{ minHeight: "100vh", color: C.ink }}>
@@ -1312,11 +1318,7 @@ export default function App() {
       </header>
 
       <main key={tab} className="fade-up" style={{ maxWidth: 1280, margin: "0 auto", padding: "30px 28px 48px" }}>
-        <Active
-          onRingClick={(ringId) => { setJumpRing(ringId); setTab(AI_TAB); }}
-          jumpRing={jumpRing}
-          clearJump={() => setJumpRing(null)}
-        />
+        <Active />
       </main>
     </div>
   );
