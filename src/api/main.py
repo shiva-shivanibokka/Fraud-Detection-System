@@ -58,6 +58,8 @@ class AppState:
     onnx_available: bool = False
     redis_available: bool = False
     conformal: dict = {}
+    cf_ranges: dict = {}
+    dice_explainer = None
 
 
 state = AppState()
@@ -144,6 +146,9 @@ async def lifespan(app: FastAPI):
 
     # ---- Load conformal calibration (uncertainty band) ----
     state.conformal = _load_json(os.path.join(MODELS_DIR, "conformal.json"), default={})
+
+    # ---- Load DICE counterfactual feature ranges (explainer built lazily) ----
+    state.cf_ranges = _load_json(os.path.join(MODELS_DIR, "cf_ranges.json"), default={})
 
     # ---- Build blocklist from ring stats ----
     # ring_stats.json may be either a bare list of ring objects or a dict with a
@@ -238,6 +243,26 @@ class ScoreResponse(BaseModel):
     conformal_coverage: float = 0.0
 
 
+class CounterfactualChange(BaseModel):
+    feature: str
+    original: float
+    suggested: float
+
+
+class Counterfactual(BaseModel):
+    changes: list[CounterfactualChange]
+    resulting_class: str  # "legit" or "fraud"
+
+
+class CounterfactualResponse(BaseModel):
+    trans_id: str
+    original_decision: str
+    original_fraud_score: float
+    counterfactuals: list[Counterfactual]
+    available: bool = True
+    message: str = ""
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -249,8 +274,8 @@ def _percentile(data: list[float], pct: int) -> float:
     return arr[min(idx, len(arr) - 1)]
 
 
-def _build_feature_vector(req: TransactionRequest, vel: dict) -> np.ndarray:
-    raw = {
+def _raw_feature_dict(req: TransactionRequest, vel: dict) -> dict:
+    return {
         "amt": req.amt,
         "hour": req.hour,
         "day_of_week": req.day_of_week,
@@ -259,8 +284,12 @@ def _build_feature_vector(req: TransactionRequest, vel: dict) -> np.ndarray:
         "age": req.age,
         "geo_distance_km": req.geo_distance_km,
         "city_pop": req.city_pop,
-        **vel,  # all 60 canonical velocity features from VelocityFeatureStore
+        **vel,  # all canonical velocity features from VelocityFeatureStore
     }
+
+
+def _build_feature_vector(req: TransactionRequest, vel: dict) -> np.ndarray:
+    raw = _raw_feature_dict(req, vel)
     vec = [raw.get(col, 0.0) for col in state.feature_cols]
     return np.array(vec, dtype=np.float32).reshape(1, -1)
 
@@ -318,6 +347,40 @@ def _conformal_fields(score: float) -> dict:
         "prediction_set": pred_set,
         "conformal_coverage": float(cfg.get("confidence_level", 0.0)),
     }
+
+
+def _cf_query_df(req: TransactionRequest, vel: dict):
+    import pandas as pd
+
+    raw = _raw_feature_dict(req, vel)
+    row = {col: float(raw.get(col, 0.0)) for col in state.feature_cols}
+    return pd.DataFrame([row], columns=state.feature_cols)
+
+
+def _get_dice_explainer():
+    """Build (and cache) the DICE explainer lazily.
+
+    dice-ml is imported only on first use, so it never costs startup memory or
+    cold-start time. Returns None if the model or feature ranges are absent.
+    """
+    if state.dice_explainer is not None:
+        return state.dice_explainer
+    if state.joblib_model is None or not state.cf_ranges.get("ranges"):
+        return None
+    try:
+        import dice_ml
+        from dice_ml import Dice
+
+        data = dice_ml.Data(
+            features=state.cf_ranges["ranges"],
+            outcome_name=state.cf_ranges.get("outcome_name", "is_fraud"),
+        )
+        model = dice_ml.Model(model=state.joblib_model, backend="sklearn")
+        state.dice_explainer = Dice(data, model, method="random")
+        return state.dice_explainer
+    except Exception as exc:
+        logger.warning("dice_init_failed", error=str(exc))
+        return None
 
 
 def _match_rules(req: TransactionRequest) -> list[dict]:
@@ -480,6 +543,72 @@ async def score_transaction(req: TransactionRequest, request: Request):
     if hasattr(log, "info"):
         log.info("scored", decision=decision, score=fraud_score, latency_ms=elapsed)
     return resp
+
+
+@app.post("/counterfactual", response_model=CounterfactualResponse)
+async def counterfactual(req: TransactionRequest):
+    """DICE counterfactuals: minimal changes to actionable features (amount,
+    geo distance, hour) that flip the model's prediction."""
+    trans_id = req.trans_id or str(uuid.uuid4())
+    ts = req.timestamp or time.time()
+
+    # Read-only velocity (do NOT record — this is a hypothetical query).
+    vel = {}
+    if state.velocity_store is not None:
+        vel = state.velocity_store.get_velocity_features(
+            card_id=req.cc_num, device_id=req.device_id, ip_prefix=req.ip_prefix,
+            merchant=req.merchant, now=ts,
+        )
+
+    features = _build_feature_vector(req, vel)
+    score, _ = _run_model(features)
+    if score >= settings.fraud_threshold_decline:
+        decision = "DECLINE"
+    elif score >= settings.fraud_threshold_review:
+        decision = "REVIEW"
+    else:
+        decision = "APPROVE"
+
+    base = dict(trans_id=trans_id, original_decision=decision,
+                original_fraud_score=round(score, 4))
+
+    explainer = _get_dice_explainer()
+    if explainer is None:
+        return CounterfactualResponse(
+            **base, counterfactuals=[], available=False,
+            message="Counterfactuals unavailable (model or feature ranges not loaded).",
+        )
+
+    vary = state.cf_ranges.get("vary_features", ["amt", "geo_distance_km", "hour"])
+    outcome = state.cf_ranges.get("outcome_name", "is_fraud")
+    query_df = _cf_query_df(req, vel)
+    try:
+        cf = explainer.generate_counterfactuals(
+            query_df, total_CFs=3, desired_class="opposite", features_to_vary=vary,
+        )
+        cfs_df = cf.cf_examples_list[0].final_cfs_df
+    except Exception as exc:
+        return CounterfactualResponse(
+            **base, counterfactuals=[], available=False,
+            message=f"No counterfactuals found: {exc}",
+        )
+
+    orig = {f: float(query_df[f].iloc[0]) for f in vary}
+    results: list[Counterfactual] = []
+    for _, r in cfs_df.iterrows():
+        changes = [
+            CounterfactualChange(
+                feature=f, original=round(orig[f], 2), suggested=round(float(r[f]), 2)
+            )
+            for f in vary
+            if abs(float(r[f]) - orig[f]) > 1e-9
+        ]
+        cls = int(r[outcome]) if outcome in cfs_df.columns else 0
+        results.append(
+            Counterfactual(changes=changes, resulting_class="fraud" if cls == 1 else "legit")
+        )
+
+    return CounterfactualResponse(**base, counterfactuals=results, available=True)
 
 
 @app.get("/health")

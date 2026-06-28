@@ -51,6 +51,24 @@ def test_velocity_hard_cap_declines(client):
     assert last["fraud_score"] == 1.0
 
 
+def test_counterfactual_endpoint(client):
+    """DICE counterfactuals endpoint returns a well-formed response."""
+    r = client.post("/counterfactual", json={
+        "cc_num": "4333333333333333", "amt": 4800.0, "hour": 3,
+        "is_night": 1, "geo_distance_km": 1200.0,
+    })
+    assert r.status_code == 200
+    d = r.json()
+    assert d["original_decision"] in {"APPROVE", "REVIEW", "DECLINE"}
+    assert isinstance(d["available"], bool)
+    assert isinstance(d["counterfactuals"], list)
+    if d["available"]:
+        for cf in d["counterfactuals"]:
+            assert cf["resulting_class"] in {"fraud", "legit"}
+            for ch in cf["changes"]:
+                assert ch["feature"] in {"amt", "geo_distance_km", "hour"}
+
+
 def test_metrics_shape(client):
     r = client.get("/metrics")
     assert r.status_code == 200
