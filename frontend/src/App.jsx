@@ -45,7 +45,7 @@ async function apiFetch(path, options = {}) {
     const hard = setTimeout(() => ctrl.abort(), HARD_MS);
     const soft = setTimeout(() => _setWaking(true), SOFT_MS); // banner if slow
     try {
-      const res = await fetch(`${API}${path}`, { ...options, signal: ctrl.signal });
+      const res = await fetch(`${API}${path}`, { ...options, cache: "no-store", signal: ctrl.signal });
       clearTimeout(hard); clearTimeout(soft); _setWaking(false);
       return res;
     } catch (e) {
@@ -522,7 +522,7 @@ const RING_PALETTE = [
 ];
 const ringColor = (i) => RING_PALETTE[(i ?? 0) % RING_PALETTE.length];
 
-function FraudRingGraph() {
+function FraudRingGraph({ onRingClick }) {
   const svgRef = useRef(null);
   const [hoveredNode, setHoveredNode] = useState(null);
   const [graphData, setGraphData] = useState(null);
@@ -564,6 +564,7 @@ function FraudRingGraph() {
       .attr("fill", (d) => (d.type === "device" ? "#B6BFD4" : ringColor(d.ring_index)))
       .attr("stroke", "#fff").attr("stroke-width", 1.8).attr("cursor", "pointer")
       .on("mouseover", (_, d) => setHoveredNode(d)).on("mouseout", () => setHoveredNode(null))
+      .on("click", (_, d) => onRingClick?.(d.ring_id))
       .call(d3.drag()
         .on("start", (e, d) => { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
         .on("drag", (e, d) => { d.fx = e.x; d.fy = e.y; })
@@ -580,8 +581,8 @@ function FraudRingGraph() {
     <>
       <TabIntro title="Fraud Ring Graph — the detected fraud rings">
         Each colored cluster below is one fraud ring: a group of cards (large dots) that share a device
-        (small grey hub) — the classic signal of organized fraud. Drag to explore, scroll to zoom, and hover
-        any node for its ring ID and stats. These are the same rings listed in the AI Assistant’s case-report dropdown.
+        (small grey hub) — the classic signal of organized fraud. Drag to explore, scroll to zoom, hover for
+        stats, or <b>click any ring to open its case report</b> in the AI Assistant.
       </TabIntro>
       <Card>
         <CardHead kicker="entity network" title="Fraud Ring Graph"
@@ -1085,7 +1086,7 @@ function RuleFromText() {
   );
 }
 
-function CaseReport() {
+function CaseReport({ jumpRing, clearJump }) {
   const [rings, setRings] = useState([]);
   const [idx, setIdx] = useState(0);
   const [report, setReport] = useState(null);
@@ -1094,11 +1095,18 @@ function CaseReport() {
   useEffect(() => {
     apiFetch("/fraud-rings").then((r) => r.json()).then((d) => setRings(Array.isArray(d) ? d : (d.rings || []))).catch(() => setRings([]));
   }, []);
-  const gen = async () => {
+  const gen = async (index = idx) => {
     setLoading(true); setError(null); setReport(null);
-    try { setReport((await llmPost("/llm/case-report", { ring_id: idx })).report); }
+    try { setReport((await llmPost("/llm/case-report", { ring_id: index })).report); }
     catch (e) { setError(e.message); } finally { setLoading(false); }
   };
+  // Clicked a ring in the graph -> select it here and generate its report.
+  useEffect(() => {
+    if (!jumpRing || !rings.length) return;
+    const i = rings.findIndex((r) => r.ring_id === jumpRing);
+    clearJump?.();
+    if (i >= 0) { setIdx(i); gen(i); }
+  }, [jumpRing, rings]);
   const sizeOf = (r) => (r?.n_cards ?? r?.cards?.length ?? 0);
   return (
     <Card style={{ marginBottom: 0 }}>
@@ -1110,10 +1118,10 @@ function CaseReport() {
               <div style={{ flex: 1 }}>
                 <span style={label}>Ring</span>
                 <select style={input} value={idx} onChange={(e) => setIdx(parseInt(e.target.value, 10))}>
-                  {rings.map((r, i) => <option key={i} value={i}>Ring #{i} — {sizeOf(r)} cards</option>)}
+                  {rings.map((r, i) => <option key={i} value={i}>{r.ring_id || `Ring #${i}`} — {sizeOf(r)} cards</option>)}
                 </select>
               </div>
-              <button style={btn("primary")} onClick={gen} disabled={loading}>{loading ? "Writing…" : "Generate"}</button>
+              <button style={btn("primary")} onClick={() => gen()} disabled={loading}>{loading ? "Writing…" : "Generate"}</button>
             </div>
             {error && <div style={{ marginTop: 12, color: C.decline, fontSize: 14 }}>{error}</div>}
             {report && <div style={{ ...llmText, marginTop: 16 }}>{report}</div>}
@@ -1122,7 +1130,7 @@ function CaseReport() {
   );
 }
 
-function AIAssistant() {
+function AIAssistant({ jumpRing, clearJump }) {
   const intro = (
     <TabIntro title="AI Assistant — your fraud copilot (bring your own key)">
       A language model wired to this system: ask questions grounded in the live fraud data, turn plain-English
@@ -1147,7 +1155,7 @@ function AIAssistant() {
         <CopilotChat />
         <div className="grid-2">
           <RuleFromText />
-          <CaseReport />
+          <CaseReport jumpRing={jumpRing} clearJump={clearJump} />
         </div>
       </div>
     </>
@@ -1267,8 +1275,11 @@ function WakingBanner() {
   );
 }
 
+const AI_TAB = TABS.findIndex(([n]) => n === "AI Assistant");
+
 export default function App() {
   const [tab, setTab] = useState(0);
+  const [jumpRing, setJumpRing] = useState(null);
   const Active = TABS[tab][1];
   return (
     <div style={{ minHeight: "100vh", color: C.ink }}>
@@ -1301,7 +1312,11 @@ export default function App() {
       </header>
 
       <main key={tab} className="fade-up" style={{ maxWidth: 1280, margin: "0 auto", padding: "30px 28px 48px" }}>
-        <Active />
+        <Active
+          onRingClick={(ringId) => { setJumpRing(ringId); setTab(AI_TAB); }}
+          jumpRing={jumpRing}
+          clearJump={() => setJumpRing(null)}
+        />
       </main>
     </div>
   );
