@@ -7,6 +7,7 @@ data/raw/
 data/processed/
 mlruns/
 catboost_info/
+data/elliptic/
 models/*.pkl
 models/*.onnx
 models/*.json
