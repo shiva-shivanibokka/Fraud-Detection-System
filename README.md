@@ -40,6 +40,10 @@ The guiding principle throughout is **earn the complexity**: every "fancier" opt
 - **Velocity feature store:** Redis sliding-window counts/sums per card/device/IP/merchant (1 min → 24 hr), with an in-memory fallback and dual-mode local/Upstash config.
 - **DuckDB feature engine:** the offline velocity computation has a DuckDB implementation that is **~9× faster than the pandas version and verified identical to 1e-12**.
 - **Model registry:** artifacts are pulled from **Hugging Face Hub** at build/startup (idempotent), keeping binaries out of git.
+- **LLM analyst copilot (BYOK):** provider- and model-selectable (OpenAI / Groq) with the user's own key held only in the browser and relayed per-request — never stored server-side. Three tools: a copilot grounded on the system's own fraud knowledge (rules, rings, metrics, importances), a natural-language → structured-rule editor, and one-click fraud-ring case reports.
+- **Live transaction feed:** each decision is best-effort published to **Supabase Realtime** (fire-and-forget, so `/score` latency is unaffected) and streamed into a dashboard tab where declines glow red.
+- **Analyst feedback loop:** ✓/✗ labels on decisions persist to a JSONL sink (and Supabase when configured) and feed a scheduled **retrain trigger** that signals when enough new labels have accrued.
+- **Observability (optional):** Sentry error tracking (FastAPI + React) and DagsHub/MLflow remote experiment tracking, each gated on a single env var.
 
 ### Module 2 — Graph-neural-network research (offline)
 - Loads the **Elliptic Bitcoin** dataset via PyTorch Geometric: **203,769 transaction nodes, 234,355 edges, 165 features, 49 time-steps**.
@@ -93,6 +97,8 @@ flowchart TB
 - **Conformal/DICE computed to be serving-light:** the heavy libraries run *offline*; serving only needs a threshold and a small ranges file, so the deployed image stays inside free-tier RAM.
 - **GNN module kept offline:** graph training needs the full graph + GPU; it's a research/benchmark module, deliberately separate from the low-latency serving path.
 
+The full reasoning behind these and other choices (ensemble rejection, temporal-GNN selection, BYOK LLM relay, fire-and-forget live feed) is recorded in [`docs/ADR.md`](docs/ADR.md).
+
 ---
 
 ## Tech Stack
@@ -107,6 +113,9 @@ flowchart TB
 | Cache | **Redis** (dual-mode local/Upstash) | sliding-window velocity, in-memory fallback |
 | Registry | **Hugging Face Hub** | versioned model artifacts pulled at deploy |
 | Config | **pydantic-settings** | no hardcoded URLs/thresholds |
+| LLM copilot | **OpenAI / Groq** over httpx (BYOK) | provider/model-selectable, key stays in the browser |
+| Live feed | **Supabase Realtime** | streams scored decisions to the dashboard |
+| Observability | **Sentry · DagsHub/MLflow** | error tracking + remote experiment tracking, env-gated |
 | GNN | **PyTorch + PyTorch Geometric** | GAT / TGAT / EvolveGCN-O on Elliptic |
 | Frontend | **React 18 + Vite + D3 + Recharts** | analyst dashboard |
 | CI / Deploy | **GitHub Actions · Render · Vercel** | Ruff + pytest gate; backend + frontend hosting |
@@ -123,6 +132,8 @@ flowchart TB
 - **Data engineering** — offline feature pipeline; DuckDB vs pandas equivalence + benchmark
 - **Uncertainty quantification & explainability** — conformal prediction + counterfactuals
 - **Graph & temporal deep learning** — GAT, TGAT, EvolveGCN-O on a real graph dataset
+- **LLM application engineering** — provider abstraction, BYOK key handling, grounded retrieval, function-style structured outputs
+- **Real-time & event-driven systems** — Supabase Realtime feed, fire-and-forget publish, active-learning feedback loop
 - **Rigorous evaluation** — temporal splits, production metrics, honest A/B model selection
 
 ---
@@ -199,7 +210,8 @@ Fraud-Detection-System/
 │   ├── config.py                 # pydantic-settings config (no hardcoded values)
 │   ├── download_models.py        # pull artifacts from Hugging Face Hub (idempotent)
 │   ├── pipeline.py               # offline data → features → model pipeline
-│   ├── api/main.py               # FastAPI 3-layer decision engine
+│   ├── api/main.py               # FastAPI decision engine + LLM/feedback/live-feed endpoints
+│   ├── llm/                      # BYOK provider abstraction + copilot/case-report/rule prompts
 │   ├── velocity/
 │   │   ├── feature_store.py      # Redis sliding-window velocity (canonical)
 │   │   └── velocity_duckdb.py    # DuckDB engine (~9× faster, verified identical)
@@ -212,9 +224,13 @@ Fraud-Detection-System/
 │   └── graph_fraud/              # Elliptic GNN module: GAT, TGAT, EvolveGCN-O
 ├── frontend/                     # React 18 + Vite analyst dashboard
 ├── tests/                        # pytest suite (API + units)
-├── scripts/upload_models_to_hf.py
-├── supabase/migrations/          # Postgres + pgvector schema
-├── .github/workflows/ci.yml      # Ruff + pytest
+├── scripts/
+│   ├── upload_models_to_hf.py
+│   └── retrain_from_feedback.py  # active-learning retrain trigger
+├── supabase/migrations/          # Postgres + pgvector schema, feedback + live-feed tables
+├── .github/workflows/
+│   ├── ci.yml                    # Ruff + pytest
+│   └── retrain-trigger.yml       # nightly feedback aggregation
 ├── render.yaml                   # backend deploy blueprint
 ├── requirements-api.txt          # lean serving deps
 └── requirements.txt              # full training/research deps
@@ -277,8 +293,7 @@ Reported under **two** protocols, transparently:
 
 ## Roadmap
 
-- **LLM analyst copilot** — provider-abstracted (OpenAI / Groq), bring-your-own-key, with pgvector-backed RAG over fraud rings and rules
-- **Live transaction feed** — Supabase Realtime stream into the dashboard
+- **pgvector semantic RAG** — upgrade the copilot's keyword-grounded retrieval to embeddings-backed pgvector retrieval (kept off the free-tier serving box today because sentence-transformers pulls torch)
 - **Serve the GNN module** — precompute Elliptic predictions behind a lightweight endpoint + graph visualization
 - **Frontend redesign** — polish the analyst UI
 
