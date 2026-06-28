@@ -33,6 +33,25 @@ def _tokens(text: str) -> set[str]:
     return {w for w in re.split(r"[^a-z0-9]+", (text or "").lower()) if len(w) > 2}
 
 
+_READABLE = {
+    "hour_night": "nighttime", "hour_day": "daytime", "weekend": "weekend",
+    "weekday": "weekday", "amt_low": "low amount", "amt_medium": "medium amount",
+    "amt_high": "high amount", "geo_far": "far from home", "geo_near": "near home",
+}
+
+
+def _readable(token: str) -> str:
+    """FP-Growth item -> plain English so the model understands the conditions."""
+    if not token:
+        return ""
+    if token.startswith("cat_"):
+        return f"category {token[4:].replace('_', ' ')}"
+    if token.startswith("state_"):
+        s = token[6:]
+        return "other state" if s == "other" else f"state {s.upper()}"
+    return _READABLE.get(token, token.replace("_", " "))
+
+
 def build_context(
     *,
     question: str,
@@ -47,12 +66,28 @@ def build_context(
 ) -> dict:
     """Select the most question-relevant fraud knowledge to ground the model."""
     q = _tokens(question)
+    rules = rules or []
 
     def rule_relevance(r: dict) -> tuple:
-        overlap = len(q & _tokens(" ".join(r.get("antecedent", []))))
+        overlap = len(q & _tokens(" ".join(_readable(a) for a in r.get("antecedents", []))))
         return (overlap, float(r.get("lift", 0.0)))
 
-    top_rules = sorted(rules or [], key=rule_relevance, reverse=True)[:max_rules]
+    top_rules = sorted(rules, key=rule_relevance, reverse=True)[:max_rules]
+
+    # Aggregate category-level fraud lift so questions like "which categories have
+    # the highest fraud lift?" are directly answerable from the grounding.
+    cat_signals: dict[str, dict] = {}
+    for r in rules:
+        lift = float(r.get("lift", 0) or 0)
+        for a in r.get("antecedents", []):
+            if a.startswith("cat_"):
+                cat = a[4:].replace("_", " ")
+                if lift > cat_signals.get(cat, {}).get("max_lift", 0):
+                    cat_signals[cat] = {
+                        "category": cat, "max_lift": round(lift, 2),
+                        "confidence": round(float(r.get("confidence", 0) or 0), 3),
+                    }
+    top_categories = sorted(cat_signals.values(), key=lambda x: x["max_lift"], reverse=True)[:10]
 
     def ring_size(r: dict) -> int:
         return len(r.get("cards", []) or []) if isinstance(r, dict) else 0
@@ -74,9 +109,11 @@ def build_context(
         "metrics": metrics or {},
         "decision_thresholds": thresholds or {},
         "blocklist_size": blocklist_size,
+        "category_fraud_signals": top_categories,
         "top_rules": [
             {
-                "antecedent": r.get("antecedent", []),
+                "conditions": [_readable(a) for a in r.get("antecedents", [])],
+                "predicts": "fraud" if "FRAUD" in (r.get("consequents") or []) else "unknown",
                 "confidence": r.get("confidence"),
                 "lift": r.get("lift"),
                 "support": r.get("support"),

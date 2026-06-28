@@ -703,20 +703,26 @@ function RuleExplorer() {
               ))}
             </div>
           } />
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
+          {[
+            ["Antecedent", "The conditions that must all hold for the rule to fire."],
+            ["Confidence", "When those conditions hold, how often the transaction is fraud."],
+            ["Lift", "How many × more likely fraud is than the baseline rate. Above 1× is predictive; 5× is strong."],
+            ["Support", "The share of all fraud cases this rule covers."],
+          ].map(([t, dsc]) => (
+            <div key={t} style={{ flex: "1 1 190px", background: C.field, border: `1px solid ${C.border}`, borderRadius: 10, padding: "11px 14px" }}>
+              <div style={{ fontFamily: FONT.mono, fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: C.primary, fontWeight: 600, marginBottom: 4 }}>{t}</div>
+              <div style={{ fontSize: 12.5, color: C.body, lineHeight: 1.45 }}>{dsc}</div>
+            </div>
+          ))}
+        </div>
         {error ? <div style={{ color: C.decline }}>Failed: {error}</div>
           : rules.length === 0 ? <div style={{ color: C.faint }}>No rules loaded. Run the training pipeline to generate FP-Growth rules.</div>
           : <div style={{ maxHeight: 540, overflowY: "auto", overflowX: "auto", borderRadius: 12, border: `1px solid ${C.border}` }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
                 <thead style={{ position: "sticky", top: 0, background: "#fff", zIndex: 1 }}>
-                  <tr>{[
-                    ["Antecedent", "The conditions that must all be true for the rule to fire."],
-                    ["Confidence", "When these conditions hold, how often the transaction turns out to be fraud."],
-                    ["Lift", "How many times more likely fraud is when the rule holds, versus the overall baseline rate. Above 1× is predictive; 5× is strong."],
-                    ["Support", "The share of all fraud cases this rule covers — its frequency."],
-                  ].map(([hd, tip]) => (
-                    <th key={hd} style={{ textAlign: "left", padding: "12px 14px", ...label, marginBottom: 0, borderBottom: `2px solid ${C.border}`, whiteSpace: "nowrap" }}>
-                      <span style={{ display: "inline-flex", alignItems: "center" }}>{hd}<Info text={tip} /></span>
-                    </th>
+                  <tr>{["Antecedent", "Confidence", "Lift", "Support"].map((hd) => (
+                    <th key={hd} style={{ textAlign: "left", padding: "12px 14px", ...label, marginBottom: 0, borderBottom: `2px solid ${C.border}`, whiteSpace: "nowrap" }}>{hd}</th>
                   ))}</tr>
                 </thead>
                 <tbody>

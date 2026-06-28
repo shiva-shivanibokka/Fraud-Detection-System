@@ -31,13 +31,17 @@ def test_parse_rule_rejects_non_json():
         tasks.parse_rule("I could not turn that into a rule, sorry.")
 
 
-def test_build_context_ranks_relevant_rules_first():
+def test_build_context_grounds_category_lift():
+    """The grounding must read the real `antecedents` field, humanize the tokens,
+    and surface a category->lift summary so the copilot can answer category
+    questions (the bug was reading singular `antecedent` -> empty conditions)."""
     rules = [
-        {"antecedent": ["category=grocery_pos"], "lift": 1.2, "confidence": 0.3},
-        {"antecedent": ["merchant=casino_xyz"], "lift": 9.0, "confidence": 0.9},
+        {"antecedents": ["cat_grocery_pos"], "consequents": ["FRAUD"], "lift": 1.2, "confidence": 0.3},
+        {"antecedents": ["cat_gas_transport", "state_other"], "consequents": ["FRAUD"],
+         "lift": 9.0, "confidence": 0.9},
     ]
     ctx = tasks.build_context(
-        question="why is the casino merchant risky?",
+        question="which merchant categories have the highest fraud lift?",
         metrics={"total_scored": 5},
         rules=rules,
         rings=[{"cards": ["a", "b"], "devices": ["d1"]}],
@@ -45,8 +49,12 @@ def test_build_context_ranks_relevant_rules_first():
         blocklist_size=7,
         thresholds={"review": 0.4, "decline": 0.8},
     )
-    # casino rule (token overlap with the question) ranks ahead of grocery
-    assert ctx["top_rules"][0]["antecedent"] == ["merchant=casino_xyz"]
+    # gas transport (lift 9) ranks above grocery in the category summary
+    assert ctx["category_fraud_signals"][0]["category"] == "gas transport"
+    assert ctx["category_fraud_signals"][0]["max_lift"] == 9.0
+    # rule conditions are humanized, not raw tokens or empty
+    conds = [c for r in ctx["top_rules"] for c in r["conditions"]]
+    assert any("category gas transport" in c for c in conds)
     assert ctx["blocklist_size"] == 7
     assert ctx["fraud_rings"][0]["cards"] == 2
 
