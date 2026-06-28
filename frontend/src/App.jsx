@@ -102,6 +102,25 @@ const decisionColor = (d) =>
   d === "APPROVE" ? C.approve : d === "REVIEW" ? C.review : C.decline;
 const scoreGradient = (s) => (s < 0.4 ? C.approve : s < 0.8 ? C.review : C.decline);
 
+// snake_case -> "Title Case" for category/merchant display.
+const prettify = (s) => (s || "").replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+
+// FP-Growth rule items -> plain English (cat_gas_transport -> "category: gas transport").
+function humanizeToken(t) {
+  if (!t) return "";
+  if (t.startsWith("cat_")) return `category: ${prettify(t.slice(4)).toLowerCase()}`;
+  if (t.startsWith("state_")) {
+    const s = t.slice(6);
+    return s === "other" ? "other state" : `state: ${s.toUpperCase()}`;
+  }
+  const map = {
+    hour_night: "nighttime", hour_day: "daytime", weekend: "weekend", weekday: "weekday",
+    amt_low: "low amount", amt_medium: "medium amount", amt_high: "high amount",
+    geo_far: "far from home", geo_near: "near home",
+  };
+  return map[t] || t.replace(/_/g, " ");
+}
+
 // ---------------------------------------------------------------------------
 // Shared styles
 // ---------------------------------------------------------------------------
@@ -149,6 +168,29 @@ function CardHead({ title, kicker, right }) {
       </div>
       {right}
     </div>
+  );
+}
+
+// Small hover "?" that explains a metric or term in plain language.
+function Info({ text }) {
+  const [show, setShow] = useState(false);
+  return (
+    <span style={{ position: "relative", display: "inline-flex", marginLeft: 6, verticalAlign: "middle" }}
+      onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)}>
+      <span style={{
+        width: 16, height: 16, borderRadius: "50%", background: C.field, border: `1px solid ${C.border}`,
+        color: C.muted, fontSize: 11, fontWeight: 700, display: "inline-flex", alignItems: "center",
+        justifyContent: "center", cursor: "help", fontFamily: FONT.display,
+      }}>?</span>
+      {show && (
+        <span style={{
+          position: "absolute", bottom: "150%", left: "50%", transform: "translateX(-50%)",
+          width: 240, background: C.ink, color: "#fff", fontFamily: "'Inter', sans-serif",
+          fontSize: 12.5, lineHeight: 1.5, fontWeight: 400, letterSpacing: "normal", textTransform: "none",
+          padding: "10px 13px", borderRadius: 9, zIndex: 40, boxShadow: "0 12px 28px -8px rgba(0,0,0,0.45)",
+        }}>{text}</span>
+      )}
+    </span>
   );
 }
 
@@ -317,7 +359,7 @@ function randIp() { return `${Math.floor(Math.random() * 255)}.${Math.floor(Math
 
 function LiveScoring() {
   const [form, setForm] = useState(() => ({
-    amt: "125.00", category: "misc_net", merchant: "fraud_demo_merchant",
+    amt: "125.00", category: "misc_net", merchant: "Riverside Market",
     state: "CA", geo_distance_km: "42", when: toLocalInput(new Date()),
     cc_num: randCard(), device_id: randDevice(), ip_prefix: randIp(),
   }));
@@ -372,7 +414,7 @@ function LiveScoring() {
             <div>
               <span style={label}>Category</span>
               <select style={input} value={form.category} onChange={set("category")}>
-                {CATEGORIES.map((c) => <option key={c}>{c}</option>)}
+                {CATEGORIES.map((c) => <option key={c} value={c}>{prettify(c)}</option>)}
               </select>
             </div>
             <div>
@@ -445,7 +487,7 @@ function LiveScoring() {
                   <div style={{ ...eyebrow, color: C.faint, marginBottom: 9 }}>triggered rules</div>
                   {result.triggered_rules.map((rule, i) => (
                     <div key={i} style={{ background: C.field, borderRadius: 9, padding: "8px 12px", marginBottom: 6, fontSize: 13, color: C.review, fontFamily: FONT.mono, fontWeight: 600 }}>
-                      IF {(rule.antecedents || []).join(" AND ")} → {(rule.confidence * 100).toFixed(0)}%
+                      IF {(rule.antecedents || []).map(humanizeToken).join(" AND ")} → {(rule.confidence * 100).toFixed(0)}%
                     </div>
                   ))}
                 </div>
@@ -475,10 +517,23 @@ function FraudRingGraph() {
 
   useEffect(() => {
     if (!graphData || !svgRef.current) return;
-    const nodes = (graphData.nodes || []).filter((n) => (n.fraud_rate ?? 0) >= threshold);
-    const nodeIds = new Set(nodes.map((n) => n.id));
-    const links = (graphData.links || []).filter(
-      (l) => nodeIds.has(l.source?.id ?? l.source) && nodeIds.has(l.target?.id ?? l.target));
+    const sid = (l) => l.source?.id ?? l.source;
+    const tid = (l) => l.target?.id ?? l.target;
+    // Accept either key ("links" or the pipeline's "edges"); clone so D3's
+    // mutations don't corrupt the cached source data across re-renders.
+    const allLinks = (graphData.links || graphData.edges || []).map((l) => ({ ...l }));
+    // Seeds = entities meeting the fraud-rate threshold; then pull in their
+    // direct neighbors so rings render connected instead of as isolated dots.
+    const seeds = new Set(
+      (graphData.nodes || []).filter((n) => (n.fraud_rate ?? 0) >= threshold).map((n) => n.id)
+    );
+    const keep = new Set(seeds);
+    allLinks.forEach((l) => {
+      if (seeds.has(sid(l))) keep.add(tid(l));
+      if (seeds.has(tid(l))) keep.add(sid(l));
+    });
+    const nodes = (graphData.nodes || []).filter((n) => keep.has(n.id)).map((n) => ({ ...n }));
+    const links = allLinks.filter((l) => keep.has(sid(l)) && keep.has(tid(l)));
     const W = svgRef.current.parentElement.clientWidth || 700, H = 480;
     d3.select(svgRef.current).selectAll("*").remove();
     const svg = d3.select(svgRef.current).attr("width", W).attr("height", H);
@@ -653,8 +708,15 @@ function RuleExplorer() {
           : <div style={{ maxHeight: 540, overflowY: "auto", overflowX: "auto", borderRadius: 12, border: `1px solid ${C.border}` }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
                 <thead style={{ position: "sticky", top: 0, background: "#fff", zIndex: 1 }}>
-                  <tr>{["Antecedent", "Confidence", "Lift", "Support"].map((hd) => (
-                    <th key={hd} style={{ textAlign: "left", padding: "12px 14px", ...label, marginBottom: 0, borderBottom: `2px solid ${C.border}`, whiteSpace: "nowrap" }}>{hd}</th>
+                  <tr>{[
+                    ["Antecedent", "The conditions that must all be true for the rule to fire."],
+                    ["Confidence", "When these conditions hold, how often the transaction turns out to be fraud."],
+                    ["Lift", "How many times more likely fraud is when the rule holds, versus the overall baseline rate. Above 1× is predictive; 5× is strong."],
+                    ["Support", "The share of all fraud cases this rule covers — its frequency."],
+                  ].map(([hd, tip]) => (
+                    <th key={hd} style={{ textAlign: "left", padding: "12px 14px", ...label, marginBottom: 0, borderBottom: `2px solid ${C.border}`, whiteSpace: "nowrap" }}>
+                      <span style={{ display: "inline-flex", alignItems: "center" }}>{hd}<Info text={tip} /></span>
+                    </th>
                   ))}</tr>
                 </thead>
                 <tbody>
@@ -662,7 +724,7 @@ function RuleExplorer() {
                     <tr key={i} style={{ borderBottom: `1px solid ${C.border}` }}>
                       <td style={{ padding: "12px 14px", color: C.ink }}>
                         {(rule.antecedents ?? []).map((a) => (
-                          <span key={a} style={{ display: "inline-block", background: "#EDF0FB", border: `1px solid ${C.border}`, borderRadius: 6, padding: "3px 9px", marginRight: 5, marginBottom: 3, fontSize: 12.5, fontFamily: FONT.mono, color: C.primary }}>{a}</span>
+                          <span key={a} style={{ display: "inline-block", background: "#EDF0FB", border: `1px solid ${C.border}`, borderRadius: 6, padding: "3px 9px", marginRight: 5, marginBottom: 3, fontSize: 12.5, fontFamily: FONT.mono, color: C.primary }}>{humanizeToken(a)}</span>
                         ))}
                         {!rule.antecedents?.length && <span style={{ color: C.faint }}>—</span>}
                       </td>
@@ -688,11 +750,13 @@ function RuleExplorer() {
 // ---------------------------------------------------------------------------
 // Tab — GNN Predictions (Elliptic Bitcoin graph)
 // ---------------------------------------------------------------------------
-function Stat({ label: lab, value, color }) {
+function Stat({ label: lab, value, color, info }) {
   return (
     <div style={{ background: C.field, borderRadius: 14, padding: "16px 18px", flex: "1 1 120px", border: `1px solid ${C.border}` }}>
       <div style={{ fontFamily: FONT.mono, fontSize: 28, fontWeight: 700, color: color || C.ink }}>{value}</div>
-      <div style={{ ...eyebrow, color: C.faint, marginTop: 4, fontSize: 11 }}>{lab}</div>
+      <div style={{ ...eyebrow, color: C.faint, marginTop: 4, fontSize: 11, display: "flex", alignItems: "center" }}>
+        {lab}{info && <Info text={info} />}
+      </div>
     </div>
   );
 }
@@ -780,9 +844,14 @@ function GNNSubgraph({ graph }) {
 function GNNTab() {
   const [d, setD] = useState(null);
   const [error, setError] = useState(null);
-  useEffect(() => {
-    apiFetch("/graph/elliptic").then((r) => r.json()).then(setD).catch((e) => setError(e.message));
-  }, []);
+  const [loading, setLoading] = useState(false);
+  const load = () => {
+    setLoading(true); setError(null);
+    apiFetch("/graph/elliptic").then((r) => r.json())
+      .then((j) => { setD(j); setLoading(false); })
+      .catch((e) => { setError(e.message); setLoading(false); });
+  };
+  useEffect(() => { load(); }, []);
   const intro = (
     <TabIntro title="GNN Predictions — graph fraud on real Bitcoin data">
       Module 2 runs a graph neural network on the Elliptic Bitcoin dataset, classifying transactions as
@@ -808,12 +877,20 @@ function GNNTab() {
       ) : (
         <>
           <Card>
-            <CardHead kicker={`${d.model || "GNN"} · Elliptic Bitcoin`} title="Test performance (illicit class)" />
+            <CardHead kicker={`${d.model || "GNN"} · Elliptic Bitcoin`} title="Test performance (illicit class)"
+              right={
+                <button style={{ ...btn("ghost"), padding: "9px 16px", fontSize: 13.5 }}
+                  onClick={load} disabled={loading}>{loading ? "Refreshing…" : "↻ Refresh"}</button>
+              } />
             <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-              <Stat label="ROC-AUC" value={pct(m.auc)} color={C.primary} />
-              <Stat label="Illicit F1" value={pct(m.illicit_f1)} color={C.violet} />
-              <Stat label="Precision" value={pct(m.illicit_precision)} color={C.sky} />
-              <Stat label="Recall" value={pct(m.illicit_recall)} color={C.approve} />
+              <Stat label="ROC-AUC" value={pct(m.auc)} color={C.primary}
+                info="Area under the ROC curve — the chance the model ranks a random fraud above a random legit transaction. 50% = guessing, 100% = perfect." />
+              <Stat label="Illicit F1" value={pct(m.illicit_f1)} color={C.violet}
+                info="The balance of precision and recall for the fraud class (their harmonic mean). A single fair score where both matter." />
+              <Stat label="Precision" value={pct(m.illicit_precision)} color={C.sky}
+                info="Of the transactions flagged as fraud, the share that truly were fraud (few false alarms = high)." />
+              <Stat label="Recall" value={pct(m.illicit_recall)} color={C.approve}
+                info="Of all the actual fraud, the share the model successfully caught (few misses = high)." />
             </div>
             <div style={{ marginTop: 14, fontSize: 13, color: C.muted, fontFamily: FONT.mono }}>
               {gs.nodes?.toLocaleString?.() ?? gs.nodes} nodes · {gs.edges?.toLocaleString?.() ?? gs.edges} edges · {gs.features} features · {gs.time_steps} time-steps
@@ -912,7 +989,7 @@ function LiveFeed() {
                     boxShadow: fraud ? `0 4px 16px -6px ${C.decline}55` : "none",
                   }}>
                     <span style={{ color: c, fontWeight: 700, fontSize: 13 }}>{r.decision}</span>
-                    <span style={{ color: C.muted, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.merchant || "—"} · {r.category || "—"}</span>
+                    <span style={{ color: C.muted, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.merchant || "—"} · {prettify(r.category) || "—"}</span>
                     <span style={{ color: C.ink, fontSize: 13, textAlign: "right" }}>${Number(r.amount ?? 0).toFixed(2)}</span>
                     <span style={{ color: scoreGradient(r.fraud_score ?? 0), fontSize: 13, textAlign: "right", fontWeight: 700 }}>{((r.fraud_score ?? 0) * 100).toFixed(0)}%</span>
                   </div>
@@ -1088,15 +1165,28 @@ function Settings() {
         The AI Assistant uses your own API key (bring-your-own-key). Pick a provider and model and paste your
         key; it’s stored only in this browser and relayed directly with each request — never saved on the server.
       </TabIntro>
-      <div style={{ maxWidth: 660 }}>
+      <div>
         <Card>
           <CardHead kicker="bring your own key" title="LLM API Settings" />
           <div className="grid-fields">
             <div>
               <span style={label}>Provider</span>
               <select style={input} value={cfg.provider} onChange={(e) => onProvider(e.target.value)}>
-                {providers.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+                {providers.map((p) => (
+                  <option key={p.id} value={p.id}>{p.label} — {p.pricing === "free" ? "Free tier" : "Paid"}</option>
+                ))}
               </select>
+              {current && (
+                <span style={{
+                  display: "inline-flex", alignItems: "center", gap: 6, marginTop: 9, fontFamily: FONT.mono,
+                  fontSize: 11.5, fontWeight: 600, padding: "4px 11px", borderRadius: 999,
+                  color: current.pricing === "free" ? C.approve : C.review,
+                  background: (current.pricing === "free" ? C.approve : C.review) + "18",
+                  border: `1px solid ${(current.pricing === "free" ? C.approve : C.review)}44`,
+                }}>
+                  {current.pricing === "free" ? "✓ Free tier available" : "Paid — billed by the provider"}
+                </span>
+              )}
             </div>
             <div>
               <span style={label}>Model</span>
