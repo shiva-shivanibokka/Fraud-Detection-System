@@ -7,17 +7,19 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
     <style>
       *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
       :root {
-        --ink: #150A30;
-        --iris: #7C5CFF;
-        --cyan: #22D3EE;
-        --magenta: #FF4D8D;
+        --bg: #F4F6FB;
+        --primary: #4F46E5;
+        --sky: #0EA5E9;
+        --pink: #EC4899;
+        --border: #E7EAF3;
+        --ink: #161B2E;
       }
 
       html { scroll-behavior: smooth; }
@@ -25,37 +27,31 @@
       body {
         position: relative;
         min-height: 100vh;
-        background: var(--ink);
-        color: #F3EEFF;
+        background: var(--bg);
+        color: var(--ink);
         font-family: 'Inter', system-ui, sans-serif;
+        font-size: 16px;
+        line-height: 1.55;
         -webkit-font-smoothing: antialiased;
         overflow-x: hidden;
       }
 
-      /* Ambient aurora — slow-drifting saturated blobs behind everything. */
+      /* Soft light wash — subtle colored blobs for depth, not a dark aurora. */
       body::before {
         content: "";
         position: fixed;
-        inset: -20%;
+        inset: -10%;
         z-index: 0;
         background:
-          radial-gradient(38% 38% at 18% 14%, rgba(124, 92, 255, 0.40), transparent 70%),
-          radial-gradient(34% 34% at 84% 12%, rgba(34, 211, 238, 0.30), transparent 70%),
-          radial-gradient(42% 42% at 78% 88%, rgba(255, 77, 141, 0.28), transparent 70%),
-          radial-gradient(40% 40% at 12% 86%, rgba(124, 92, 255, 0.22), transparent 70%);
-        filter: blur(20px);
-        animation: drift 26s ease-in-out infinite alternate;
+          radial-gradient(34% 34% at 12% 6%, rgba(79, 70, 229, 0.10), transparent 70%),
+          radial-gradient(30% 30% at 92% 4%, rgba(14, 165, 233, 0.10), transparent 70%),
+          radial-gradient(36% 36% at 88% 96%, rgba(236, 72, 153, 0.07), transparent 70%);
         pointer-events: none;
       }
       #root { position: relative; z-index: 1; }
 
-      @keyframes drift {
-        0%   { transform: translate3d(0, 0, 0) scale(1); }
-        50%  { transform: translate3d(2.5%, -2%, 0) scale(1.08); }
-        100% { transform: translate3d(-2%, 2.5%, 0) scale(1.04); }
-      }
       @keyframes fadeUp {
-        from { opacity: 0; transform: translateY(14px); }
+        from { opacity: 0; transform: translateY(12px); }
         to   { opacity: 1; transform: translateY(0); }
       }
       @keyframes rowIn {
@@ -63,53 +59,53 @@
         to   { opacity: 1; transform: translateX(0); }
       }
       @keyframes pulseRed {
-        0%, 100% { box-shadow: 0 0 0 0 rgba(255, 61, 110, 0.55); }
-        50%      { box-shadow: 0 0 28px 4px rgba(255, 61, 110, 0.55); }
+        0%, 100% { box-shadow: 0 0 0 0 rgba(244, 63, 94, 0.40); }
+        50%      { box-shadow: 0 0 26px 3px rgba(244, 63, 94, 0.40); }
       }
       @keyframes signalPing {
-        0%   { transform: scale(1); opacity: 1; }
+        0%   { transform: scale(1); opacity: 0.9; }
         70%  { transform: scale(2.6); opacity: 0; }
         100% { transform: scale(2.6); opacity: 0; }
       }
 
-      .fade-up { animation: fadeUp 0.5s cubic-bezier(0.22, 1, 0.36, 1) both; }
-      .row-in  { animation: rowIn 0.35s ease both; }
+      .fade-up { animation: fadeUp 0.45s cubic-bezier(0.22, 1, 0.36, 1) both; }
+      .row-in  { animation: rowIn 0.32s ease both; }
       .pulse-red { animation: pulseRed 1.6s ease-in-out infinite; }
 
+      /* White surface with soft depth — the professional card. */
       .glass {
-        background: linear-gradient(160deg, rgba(46, 26, 102, 0.62), rgba(28, 16, 66, 0.62));
-        border: 1px solid rgba(150, 120, 255, 0.22);
+        background: #FFFFFF;
+        border: 1px solid var(--border);
         border-radius: 18px;
-        backdrop-filter: blur(14px);
-        -webkit-backdrop-filter: blur(14px);
-        box-shadow: 0 18px 50px -24px rgba(124, 92, 255, 0.45);
+        box-shadow: 0 10px 34px -14px rgba(38, 50, 90, 0.22);
       }
 
-      /* Responsive grids (inline styles can't do media queries). */
-      .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-      .grid-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-      @media (max-width: 860px) { .grid-2 { grid-template-columns: 1fr; } }
-      @media (max-width: 560px) { .grid-fields { grid-template-columns: 1fr; } }
+      .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+      .grid-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+      @media (max-width: 880px) { .grid-2 { grid-template-columns: 1fr; } }
+      @media (max-width: 580px) { .grid-fields { grid-template-columns: 1fr; } }
 
       input, select, textarea, button { font-family: inherit; }
-      input::placeholder, textarea::placeholder { color: #6f63a6; }
-      select option { background: #1B0E3E; color: #F3EEFF; }
+      input::placeholder, textarea::placeholder { color: #A2AAB9; }
+      select option { background: #FFFFFF; color: var(--ink); }
 
       :focus-visible {
-        outline: 2px solid var(--cyan);
+        outline: 2px solid var(--primary);
         outline-offset: 2px;
-        border-radius: 6px;
-      }
-
-      input[type=range] { accent-color: var(--iris); }
-      input[type=datetime-local], input[type=time] { color-scheme: dark; }
-
-      ::-webkit-scrollbar { width: 8px; height: 8px; }
-      ::-webkit-scrollbar-track { background: transparent; }
-      ::-webkit-scrollbar-thumb {
-        background: linear-gradient(var(--iris), var(--cyan));
         border-radius: 8px;
       }
+
+      input[type=range] { accent-color: var(--primary); }
+      input[type=datetime-local], input[type=time] { color-scheme: light; }
+
+      ::-webkit-scrollbar { width: 10px; height: 10px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb {
+        background: #CDD4E4;
+        border-radius: 10px;
+        border: 2px solid var(--bg);
+      }
+      ::-webkit-scrollbar-thumb:hover { background: #B6BFD4; }
 
       @media (prefers-reduced-motion: reduce) {
         body::before { animation: none; }
