@@ -212,18 +212,30 @@ function TabIntro({ title, children }) {
 // LLM config (BYOK) — provider, model, key live ONLY in this browser's
 // localStorage and are sent per-request via X-LLM-* headers; never on the server.
 // ---------------------------------------------------------------------------
+// sessionStorage (NOT localStorage): the key survives refreshes during a visit
+// but is cleared automatically when the browser/tab is closed, so a BYOK key
+// never lingers on the machine. It is never sent to or stored on our server.
 const LLM_LS = { provider: "fds_llm_provider", model: "fds_llm_model", key: "fds_llm_key" };
+const _kv = typeof window !== "undefined" ? window.sessionStorage : null;
 function loadLLMConfig() {
   return {
-    provider: localStorage.getItem(LLM_LS.provider) || "",
-    model: localStorage.getItem(LLM_LS.model) || "",
-    key: localStorage.getItem(LLM_LS.key) || "",
+    provider: _kv?.getItem(LLM_LS.provider) || "",
+    model: _kv?.getItem(LLM_LS.model) || "",
+    key: _kv?.getItem(LLM_LS.key) || "",
   };
 }
 function saveLLMConfig({ provider, model, key }) {
-  localStorage.setItem(LLM_LS.provider, provider);
-  localStorage.setItem(LLM_LS.model, model);
-  localStorage.setItem(LLM_LS.key, key);
+  _kv?.setItem(LLM_LS.provider, provider);
+  _kv?.setItem(LLM_LS.model, model);
+  _kv?.setItem(LLM_LS.key, key);
+}
+function clearLLMConfig() {
+  Object.values(LLM_LS).forEach((k) => _kv?.removeItem(k));
+}
+// One-time migration: an earlier build stored the key in localStorage (which
+// persists across restarts). Wipe any leftover so it doesn't linger.
+if (typeof window !== "undefined" && window.localStorage) {
+  Object.values(LLM_LS).forEach((k) => window.localStorage.removeItem(k));
 }
 function hasLLMConfig() {
   const c = loadLLMConfig();
@@ -1165,11 +1177,13 @@ function Settings() {
     setCfg((c) => ({ ...c, provider: id, model: p?.models?.[0] || "" })); setSaved(false);
   };
   const save = () => { saveLLMConfig(cfg); setSaved(true); };
+  const forget = () => { clearLLMConfig(); setCfg((c) => ({ ...c, key: "" })); setSaved(false); };
   return (
     <>
       <TabIntro title="Settings — connect your own LLM">
         The AI Assistant uses your own API key (bring-your-own-key). Pick a provider and model and paste your
-        key; it’s stored only in this browser and relayed directly with each request — never saved on the server.
+        key; it’s kept <b>only for this browser session</b> (cleared when you close the browser) and relayed
+        directly with each request — never sent to or stored on our server.
       </TabIntro>
       <div>
         <Card>
@@ -1213,7 +1227,8 @@ function Settings() {
           </div>
           <div style={{ display: "flex", gap: 12, alignItems: "center", marginTop: 20 }}>
             <button style={btn("primary")} onClick={save} disabled={!cfg.provider || !cfg.key}>Save</button>
-            {saved && <span style={{ color: C.approve, fontSize: 14, fontFamily: FONT.mono, fontWeight: 600 }}>✓ saved to this browser</span>}
+            <button style={btn("ghost")} onClick={forget} disabled={!cfg.key}>Forget key</button>
+            {saved && <span style={{ color: C.approve, fontSize: 14, fontFamily: FONT.mono, fontWeight: 600 }}>✓ saved for this session</span>}
             {error && <span style={{ color: C.decline, fontSize: 14 }}>{error}</span>}
           </div>
         </Card>
