@@ -615,7 +615,7 @@ function DriftMonitor() {
   useEffect(() => {
     apiFetch("/drift").then((r) => r.json()).then(setData).catch((e) => setError(e.message));
   }, []);
-  const months = data?.months ?? [];
+  const months = Array.isArray(data) ? data : (data?.months ?? []);
   const intro = (
     <TabIntro title="Drift Monitor — is the model still accurate?">
       Concept drift means fraud patterns shift and a model silently goes stale. This tracks test AUC month by
@@ -722,7 +722,7 @@ function RuleExplorer() {
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
                 <thead style={{ position: "sticky", top: 0, background: "#fff", zIndex: 1 }}>
                   <tr>{["Antecedent", "Confidence", "Lift", "Support"].map((hd) => (
-                    <th key={hd} style={{ textAlign: "left", padding: "12px 14px", ...label, marginBottom: 0, borderBottom: `2px solid ${C.border}`, whiteSpace: "nowrap" }}>{hd}</th>
+                    <th key={hd} style={{ ...label, display: "table-cell", marginBottom: 0, textAlign: "left", padding: "12px 14px", borderBottom: `2px solid ${C.border}`, whiteSpace: "nowrap" }}>{hd}</th>
                   ))}</tr>
                 </thead>
                 <tbody>
