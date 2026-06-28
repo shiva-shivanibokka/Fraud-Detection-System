@@ -516,9 +516,14 @@ function LiveScoring() {
 // ---------------------------------------------------------------------------
 // Tab — Fraud Ring Graph (D3 force-directed)
 // ---------------------------------------------------------------------------
+const RING_PALETTE = [
+  "#4F46E5", "#0EA5E9", "#EC4899", "#10B981", "#F59E0B", "#8B5CF6",
+  "#F43F5E", "#14B8A6", "#6366F1", "#06B6D4", "#D946EF", "#84CC16",
+];
+const ringColor = (i) => RING_PALETTE[(i ?? 0) % RING_PALETTE.length];
+
 function FraudRingGraph() {
   const svgRef = useRef(null);
-  const [threshold, setThreshold] = useState(0);
   const [hoveredNode, setHoveredNode] = useState(null);
   const [graphData, setGraphData] = useState(null);
   const [error, setError] = useState(null);
@@ -529,40 +534,35 @@ function FraudRingGraph() {
 
   useEffect(() => {
     if (!graphData || !svgRef.current) return;
-    const sid = (l) => l.source?.id ?? l.source;
-    const tid = (l) => l.target?.id ?? l.target;
-    // Accept either key ("links" or the pipeline's "edges"); clone so D3's
-    // mutations don't corrupt the cached source data across re-renders.
-    const allLinks = (graphData.links || graphData.edges || []).map((l) => ({ ...l }));
-    // Seeds = entities meeting the fraud-rate threshold; then pull in their
-    // direct neighbors so rings render connected instead of as isolated dots.
-    const seeds = new Set(
-      (graphData.nodes || []).filter((n) => (n.fraud_rate ?? 0) >= threshold).map((n) => n.id)
-    );
-    const keep = new Set(seeds);
-    allLinks.forEach((l) => {
-      if (seeds.has(sid(l))) keep.add(tid(l));
-      if (seeds.has(tid(l))) keep.add(sid(l));
-    });
-    const nodes = (graphData.nodes || []).filter((n) => keep.has(n.id)).map((n) => ({ ...n }));
-    const links = allLinks.filter((l) => keep.has(sid(l)) && keep.has(tid(l)));
-    const W = svgRef.current.parentElement.clientWidth || 700, H = 480;
+    const nodes = (graphData.nodes || []).map((n) => ({ ...n }));
+    const links = (graphData.links || graphData.edges || []).map((l) => ({ ...l }));
+    if (!nodes.length) return;
+    const W = svgRef.current.parentElement.clientWidth || 700, H = 520;
+    // Lay the rings out on a grid so each disconnected cluster gets its own cell.
+    const nRings = Math.max(1, new Set(nodes.map((n) => n.ring_index)).size);
+    const cols = Math.ceil(Math.sqrt(nRings * (W / H)));
+    const rows = Math.ceil(nRings / cols);
+    const cx = (i) => ((i % cols) + 0.5) * (W / cols);
+    const cy = (i) => (Math.floor(i / cols) + 0.5) * (H / rows);
+
     d3.select(svgRef.current).selectAll("*").remove();
     const svg = d3.select(svgRef.current).attr("width", W).attr("height", H);
     const g = svg.append("g");
-    svg.call(d3.zoom().scaleExtent([0.3, 4]).on("zoom", (e) => g.attr("transform", e.transform)));
-    const colorMap = { card: C.sky, device: C.primary, ip: C.violet, merchant: C.approve };
+    svg.call(d3.zoom().scaleExtent([0.3, 5]).on("zoom", (e) => g.attr("transform", e.transform)));
+
     const sim = d3.forceSimulation(nodes)
-      .force("link", d3.forceLink(links).id((d) => d.id).distance(80))
-      .force("charge", d3.forceManyBody().strength(-130))
-      .force("center", d3.forceCenter(W / 2, H / 2))
-      .force("collision", d3.forceCollide(20));
+      .force("link", d3.forceLink(links).id((d) => d.id).distance(34).strength(0.7))
+      .force("charge", d3.forceManyBody().strength(-70))
+      .force("x", d3.forceX((d) => cx(d.ring_index)).strength(0.28))
+      .force("y", d3.forceY((d) => cy(d.ring_index)).strength(0.28))
+      .force("collision", d3.forceCollide((d) => (d.type === "card" ? 12 : 7)));
+
     const link = g.append("g").selectAll("line").data(links).join("line")
-      .attr("stroke", "#CBD2E4").attr("stroke-width", 1.5);
+      .attr("stroke", "#CBD2E4").attr("stroke-width", 1.2);
     const node = g.append("g").selectAll("circle").data(nodes).join("circle")
-      .attr("r", (d) => 6 + Math.sqrt(d.txn_count ?? 1) * 2)
-      .attr("fill", (d) => d.is_fraud ? C.decline : (colorMap[d.type] || C.muted))
-      .attr("stroke", "#fff").attr("stroke-width", 2).attr("cursor", "pointer")
+      .attr("r", (d) => (d.type === "card" ? 6 + Math.min(13, Math.sqrt(d.txn_count ?? 1)) : 5))
+      .attr("fill", (d) => (d.type === "device" ? "#B6BFD4" : ringColor(d.ring_index)))
+      .attr("stroke", "#fff").attr("stroke-width", 1.8).attr("cursor", "pointer")
       .on("mouseover", (_, d) => setHoveredNode(d)).on("mouseout", () => setHoveredNode(null))
       .call(d3.drag()
         .on("start", (e, d) => { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
@@ -573,30 +573,28 @@ function FraudRingGraph() {
       node.attr("cx", (d) => d.x).attr("cy", (d) => d.y);
     });
     return () => sim.stop();
-  }, [graphData, threshold]);
+  }, [graphData]);
 
+  const nRings = graphData ? new Set((graphData.nodes || []).map((n) => n.ring_id)).size : 0;
   return (
     <>
-      <TabIntro title="Fraud Ring Graph — find connected fraud networks">
-        Cards, devices, IPs, and merchants are linked when they share transactions. Tight clusters of red
-        (fraud) nodes are likely organized rings. Drag nodes to explore, scroll to zoom, and raise the
-        <b> fraud-rate threshold</b> to hide low-risk entities and surface the rings.
+      <TabIntro title="Fraud Ring Graph — the detected fraud rings">
+        Each colored cluster below is one fraud ring: a group of cards (large dots) that share a device
+        (small grey hub) — the classic signal of organized fraud. Drag to explore, scroll to zoom, and hover
+        any node for its ring ID and stats. These are the same rings listed in the AI Assistant’s case-report dropdown.
       </TabIntro>
       <Card>
         <CardHead kicker="entity network" title="Fraud Ring Graph"
-          right={
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <span style={{ ...label, marginBottom: 0 }}>fraud rate ≥ {(threshold * 100).toFixed(0)}%</span>
-              <input type="range" min={0} max={1} step={0.05} value={threshold}
-                onChange={(e) => setThreshold(parseFloat(e.target.value))} style={{ width: 150 }} />
-            </div>
-          } />
-        <div style={{ display: "flex", gap: 18, marginBottom: 14, fontSize: 13, color: C.muted, flexWrap: "wrap", fontFamily: FONT.mono }}>
-          {[["card", C.sky], ["device", C.primary], ["ip", C.violet], ["merchant", C.approve], ["fraud", C.decline]].map(([t, c]) => (
-            <div key={t} style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              <span style={{ width: 11, height: 11, borderRadius: "50%", background: c }} />{t}
-            </div>
-          ))}
+          right={<span style={{ ...label, marginBottom: 0 }}>{nRings} rings</span>} />
+        <div style={{ display: "flex", gap: 18, marginBottom: 14, fontSize: 13, color: C.muted, flexWrap: "wrap", fontFamily: FONT.mono, alignItems: "center" }}>
+          <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <span style={{ width: 14, height: 14, borderRadius: "50%", background: ringColor(0) }} />
+            <span style={{ width: 14, height: 14, borderRadius: "50%", background: ringColor(2), marginLeft: -4 }} />
+            card (color = its ring)
+          </span>
+          <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <span style={{ width: 9, height: 9, borderRadius: "50%", background: "#B6BFD4" }} /> shared device
+          </span>
         </div>
         {error
           ? <div style={{ color: C.decline, padding: 20 }}>Failed to load graph: {error}. Ensure the API is running.</div>
@@ -604,12 +602,12 @@ function FraudRingGraph() {
               <svg ref={svgRef} style={{ background: "#FBFCFE", borderRadius: 14, width: "100%", border: `1px solid ${C.border}` }} />
               {hoveredNode && (
                 <div className="glass" style={{ position: "absolute", top: 12, left: 12, padding: "12px 16px", fontSize: 13, fontFamily: FONT.mono }}>
-                  <div style={{ color: C.primary, fontWeight: 700, marginBottom: 4 }}>{hoveredNode.id}</div>
-                  <div style={{ color: C.muted }}>type: {hoveredNode.type}</div>
+                  <div style={{ color: ringColor(hoveredNode.ring_index), fontWeight: 700, marginBottom: 4 }}>{hoveredNode.ring_id}</div>
+                  <div style={{ color: C.muted }}>{hoveredNode.type === "card" ? "card" : "shared device"}</div>
                   <div style={{ color: C.muted }}>txns: {hoveredNode.txn_count ?? "—"}</div>
-                  <div style={{ color: hoveredNode.fraud_rate > 0.3 ? C.decline : C.muted }}>
-                    fraud: {((hoveredNode.fraud_rate ?? 0) * 100).toFixed(1)}%
-                  </div>
+                  {hoveredNode.type === "card" && (
+                    <div style={{ color: C.muted }}>fraud rate: {((hoveredNode.fraud_rate ?? 0) * 100).toFixed(1)}%</div>
+                  )}
                 </div>
               )}
             </div>}

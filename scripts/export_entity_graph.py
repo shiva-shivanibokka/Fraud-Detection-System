@@ -1,75 +1,80 @@
 """
-Regenerate models/entity_graph.json for the Fraud Ring Graph tab.
+Regenerate models/entity_graph.json as the detected fraud RINGS.
 
-The previously published artifact predated the edge-building fix, so it had 0
-edges (just a scatter of dots). This rebuilds the entity graph from the training
-data and exports a fraud-centric *sampled* subgraph — the riskiest cards plus
-the devices/IPs/merchants they share (which is where rings show up) — small
-enough to render smoothly in D3.
+Earlier this exported a generic, dense entity network that didn't actually show
+"rings". It now mirrors scripts/export_rings.py: fraud cards that share a device
+form a ring (a connected component), and the graph is the union of the top rings
+— each card plus the device(s) it shares with the rest of its ring. The force
+layout lays these out as separate clusters, and every node carries its ring_id /
+ring_index so the graph and the Ring Case Report dropdown line up exactly.
 
-Output keys match what the frontend reads: {"nodes": [...], "links": [...]}.
+Output: {"nodes": [...], "links": [...]} with node fields
+  id, type ("card"|"device"), ring_id, ring_index, is_fraud, txn_count, fraud_rate
 
-Run locally (needs data/processed/train.parquet), then upload to HF Hub:
-    python -m scripts.export_entity_graph
+Run:  python -m scripts.export_entity_graph   (then upload models/entity_graph.json to HF)
 """
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
 
+import networkx as nx
 import pandas as pd
 
-from src.graph.entity_graph import build_entity_graph
-
+SRC = os.path.join("data", "processed", "train.parquet")
 OUT = os.path.join("models", "entity_graph.json")
-SEED_CARDS = 140      # riskiest cards to anchor on
-CARDS_PER_ENTITY = 6  # how many sharers to pull in per device/ip/merchant
-MAX_NODES = 500
-MAX_LINKS = 1300
+MIN_RING = 3      # must match scripts/export_rings.py so ring_ids align
+MAX_RINGS = 25
 
 
 def main() -> None:
-    cols = ["cc_num", "device_id", "ip_prefix", "merchant", "amt", "is_fraud"]
-    df = pd.read_parquet("data/processed/train.parquet", columns=cols)
-    print(f"[entity-graph] loaded {len(df):,} rows")
+    cols = ["cc_num", "device_id", "amt", "is_fraud"]
+    df = pd.read_parquet(SRC, columns=cols)
+    fraud_cards = set(df.groupby("cc_num")["is_fraud"].sum().pipe(lambda s: s[s > 0]).index)
+    sub = df[df["cc_num"].isin(fraud_cards)]
 
-    g = build_entity_graph(df)
-    print(f"[entity-graph] full graph: {g.number_of_nodes():,} nodes, {g.number_of_edges():,} edges")
+    # Link fraud cards that share a device, then each component is a ring.
+    g = nx.Graph()
+    g.add_nodes_from(fraud_cards)
+    for _, cards in sub.groupby("device_id")["cc_num"].unique().items():
+        if len(cards) >= 2:
+            g.add_edges_from(itertools.combinations(cards, 2))
+    components = sorted((c for c in nx.connected_components(g) if len(c) >= MIN_RING),
+                        key=len, reverse=True)[:MAX_RINGS]
 
-    cards = [(n, d) for n, d in g.nodes(data=True) if d.get("node_type") == "card"]
-    cards.sort(key=lambda x: (x[1].get("fraud_rate", 0), x[1].get("txn_count", 0)), reverse=True)
-    seeds = [n for n, _ in cards[:SEED_CARDS]]
-
-    keep: set = set(seeds)
-    for s in seeds:                       # add the entities each risky card touches
-        keep.update(g.neighbors(s))
-    for ent in [n for n in list(keep) if g.nodes[n].get("node_type") != "card"]:
-        for c in list(g.neighbors(ent))[:CARDS_PER_ENTITY]:  # other cards on that entity (rings)
-            keep.add(c)
-        if len(keep) >= MAX_NODES:
-            break
-    keep = set(list(keep)[:MAX_NODES])
-
-    h = g.subgraph(keep)
-    nodes = [{
-        "id": n,
-        "type": d.get("node_type", "unknown"),
-        "fraud_rate": round(float(d.get("fraud_rate", 0) or 0), 4),
-        "is_fraud": int(d.get("is_fraud_node", 0) or 0),
-        "txn_count": int(d.get("txn_count", 0) or 0),
-    } for n, d in h.nodes(data=True)]
-    links = [{"source": u, "target": v, "type": h.edges[u, v].get("edge_type", "")}
-             for u, v in h.edges()][:MAX_LINKS]
+    nodes, links = [], []
+    for idx, cards in enumerate(components):
+        ring_id = f"RING_{idx + 1:04d}"
+        rt = sub[sub["cc_num"].isin(cards)]
+        for card in cards:
+            ct = df[df["cc_num"] == card]
+            nodes.append({
+                "id": f"card_{int(card)}", "type": "card", "ring_id": ring_id, "ring_index": idx,
+                "is_fraud": 1, "txn_count": int(len(ct)),
+                "fraud_rate": round(float(ct["is_fraud"].mean()), 4),
+            })
+        # shared devices (used by >=2 cards of this ring) become the ring's hubs
+        dev_cards = rt.groupby("device_id")["cc_num"].apply(lambda s: set(s.unique()))
+        for dev, dcards in dev_cards.items():
+            ring_dcards = dcards & set(cards)
+            if len(ring_dcards) >= 2:
+                dev_id = f"dev_{dev}_{ring_id}"
+                nodes.append({
+                    "id": dev_id, "type": "device", "ring_id": ring_id, "ring_index": idx,
+                    "is_fraud": 0, "txn_count": int(len(ring_dcards)), "fraud_rate": 0.0,
+                })
+                links.extend({"source": f"card_{int(c)}", "target": dev_id} for c in ring_dcards)
 
     artifact = {"nodes": nodes, "links": links}
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     with open(OUT, "w", encoding="utf-8") as f:
         json.dump(artifact, f)
-    size_kb = os.path.getsize(OUT) / 1024
-    fraud_nodes = sum(1 for n in nodes if n["is_fraud"])
-    print(f"[entity-graph] exported {len(nodes)} nodes ({fraud_nodes} fraud), "
-          f"{len(links)} links -> {OUT} ({size_kb:.0f} KB)")
+    n_cards = sum(1 for n in nodes if n["type"] == "card")
+    print(f"[entity-graph] {len(components)} rings -> {n_cards} cards, "
+          f"{len(nodes) - n_cards} shared devices, {len(links)} links "
+          f"({os.path.getsize(OUT) / 1024:.0f} KB)")
 
 
 if __name__ == "__main__":
