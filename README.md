@@ -198,7 +198,9 @@ curl -X POST http://localhost:8000/counterfactual -H "Content-Type: application/
 python -m src.graph_fraud.explore_temporal      # dataset structure
 python -m src.graph_fraud.train_gat             # static GAT baseline
 python -m src.graph_fraud.train_evolvegcn       # temporal EvolveGCN-O
+python -m src.graph_fraud.export_predictions    # write served predictions JSON
 ```
+The export writes `models/elliptic_graph.json` (test metrics + per-time-step illicit counts + a sampled high-risk subgraph), which the API serves torch-free at `GET /graph/elliptic`.
 
 ---
 
@@ -294,8 +296,7 @@ Reported under **two** protocols, transparently:
 ## Roadmap
 
 - **pgvector semantic RAG** — upgrade the copilot's keyword-grounded retrieval to embeddings-backed pgvector retrieval (kept off the free-tier serving box today because sentence-transformers pulls torch)
-- **Serve the GNN module** — precompute Elliptic predictions behind a lightweight endpoint + graph visualization
-- **Frontend redesign** — polish the analyst UI
+- **GNN prediction dashboard** — the `/graph/elliptic` endpoint already serves the model's predictions, metrics, and a sampled subgraph; add a dashboard tab to render the force-graph + per-time-step illicit timeline
 
 ---
 
