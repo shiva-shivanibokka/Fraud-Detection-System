@@ -6,6 +6,7 @@ Layer 3: SHAP explanation generation
 """
 
 import collections
+import datetime as dt
 import json
 import math
 import os
@@ -17,10 +18,13 @@ from typing import Any
 import numpy as np
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from src.config import settings
 from src.download_models import ensure_models
+from src.llm import providers as llm_providers
+from src.llm import tasks as llm_tasks
 from src.velocity.feature_store import VelocityFeatureStore
 
 try:
@@ -261,6 +265,28 @@ class CounterfactualResponse(BaseModel):
     counterfactuals: list[Counterfactual]
     available: bool = True
     message: str = ""
+
+
+# ---- LLM copilot (BYOK) request bodies ----
+class CopilotRequest(BaseModel):
+    question: str
+
+
+class CaseReportRequest(BaseModel):
+    ring_id: int | None = None  # index into ring_stats.json
+    ring: dict | None = None  # or pass the ring object directly
+
+
+class RuleFromTextRequest(BaseModel):
+    text: str
+
+
+class FeedbackRequest(BaseModel):
+    trans_id: str
+    decision: str = ""
+    fraud_score: float = 0.0
+    label: str  # analyst ground-truth: "fraud" or "legit"
+    note: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -677,13 +703,11 @@ async def entity_graph():
     )
 
 
-@app.get("/feature-importance")
-async def feature_importance():
+def _feature_importance_list() -> list[dict]:
     cols = state.feature_cols or []
     if state.joblib_model is not None and hasattr(state.joblib_model, "feature_importances_"):
         imp = state.joblib_model.feature_importances_
-        return {"features": [{"name": c, "importance": float(v)} for c, v in zip(cols, imp)]}
-    # Heuristic fallback
+        return [{"name": c, "importance": float(v)} for c, v in zip(cols, imp)]
     defaults = {
         "amt": 0.28,
         "geo_distance_km": 0.18,
@@ -696,4 +720,162 @@ async def feature_importance():
         "is_night": 0.02,
         "is_weekend": 0.01,
     }
-    return {"features": [{"name": c, "importance": defaults.get(c, 0.01)} for c in cols]}
+    return [{"name": c, "importance": defaults.get(c, 0.01)} for c in cols]
+
+
+@app.get("/feature-importance")
+async def feature_importance():
+    return {"features": _feature_importance_list()}
+
+
+# ---------------------------------------------------------------------------
+# LLM copilot (BYOK) — provider/model/key arrive per-request via X-LLM-* headers
+# and are never stored or logged. The server only relays the call.
+# ---------------------------------------------------------------------------
+def _llm_creds(request: Request) -> tuple[str, str, str]:
+    return (
+        request.headers.get("X-LLM-Provider", "").lower().strip(),
+        request.headers.get("X-LLM-Model", "").strip(),
+        request.headers.get("X-LLM-Key", "").strip(),
+    )
+
+
+def _metrics_snapshot() -> dict:
+    lat = list(state.latency_history)
+    decline_rate = (state.decline_count / state.total_scored) if state.total_scored else 0.0
+    return {
+        "total_scored": state.total_scored,
+        "decline_rate": round(decline_rate, 4),
+        "latency_p95_ms": round(_percentile(lat, 95), 2),
+    }
+
+
+@app.get("/llm/providers")
+async def get_llm_providers():
+    """Provider/model catalog for the frontend Settings dropdowns (no secrets)."""
+    return llm_providers.public_registry()
+
+
+@app.post("/llm/copilot")
+async def llm_copilot(body: CopilotRequest, request: Request):
+    provider, model, key = _llm_creds(request)
+    rings = _load_json(os.path.join(MODELS_DIR, "ring_stats.json"), default=[])
+    if isinstance(rings, dict):
+        rings = rings.get("rings", [])
+    context = llm_tasks.build_context(
+        question=body.question,
+        metrics=_metrics_snapshot(),
+        rules=state.fraud_rules,
+        rings=rings or [],
+        feature_importance=_feature_importance_list(),
+        blocklist_size=len(state.known_fraud_cards),
+        thresholds={
+            "review": settings.fraud_threshold_review,
+            "decline": settings.fraud_threshold_decline,
+        },
+    )
+    messages = llm_tasks.copilot_messages(context, body.question)
+    try:
+        answer = await llm_providers.chat(provider, model, key, messages, max_tokens=700)
+    except llm_providers.LLMError as exc:
+        return JSONResponse(status_code=exc.status, content={"detail": exc.message})
+    return {"answer": answer, "grounded_on": {
+        "rules": len(context["top_rules"]),
+        "rings": len(context["fraud_rings"]),
+        "features": len(context["top_features"]),
+    }}
+
+
+@app.post("/llm/case-report")
+async def llm_case_report(body: CaseReportRequest, request: Request):
+    provider, model, key = _llm_creds(request)
+    ring = body.ring
+    if ring is None:
+        rings = _load_json(os.path.join(MODELS_DIR, "ring_stats.json"), default=[])
+        if isinstance(rings, dict):
+            rings = rings.get("rings", [])
+        idx = body.ring_id or 0
+        if not rings or idx < 0 or idx >= len(rings):
+            return JSONResponse(status_code=404, content={"detail": "Fraud ring not found."})
+        ring = rings[idx]
+    messages = llm_tasks.case_report_messages(ring)
+    try:
+        report = await llm_providers.chat(provider, model, key, messages, max_tokens=600)
+    except llm_providers.LLMError as exc:
+        return JSONResponse(status_code=exc.status, content={"detail": exc.message})
+    return {"report": report}
+
+
+@app.post("/llm/rule-from-text")
+async def llm_rule_from_text(body: RuleFromTextRequest, request: Request):
+    provider, model, key = _llm_creds(request)
+    messages = llm_tasks.rule_messages(body.text)
+    try:
+        content = await llm_providers.chat(
+            provider, model, key, messages, temperature=0.0, max_tokens=400, json_mode=True
+        )
+    except llm_providers.LLMError as exc:
+        return JSONResponse(status_code=exc.status, content={"detail": exc.message})
+    try:
+        rule = llm_tasks.parse_rule(content)
+    except ValueError as exc:
+        return JSONResponse(
+            status_code=422,
+            content={"detail": f"Could not parse a rule from the response: {exc}"},
+        )
+    return {"rule": rule, "raw": content}
+
+
+# ---------------------------------------------------------------------------
+# Analyst feedback loop — ✓/✗ labels on REVIEW/DECLINE decisions feed active
+# learning. Always appended to a local JSONL; best-effort mirrored to Supabase.
+# ---------------------------------------------------------------------------
+async def _store_feedback(record: dict) -> dict:
+    sinks = {"jsonl": False, "supabase": False}
+    # Local JSONL (always-on sink)
+    try:
+        path = settings.feedback_path
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+        sinks["jsonl"] = True
+    except Exception as exc:
+        logger.warning("feedback_jsonl_failed", error=str(exc))
+    # Best-effort Supabase REST insert (no SDK; plain HTTPS)
+    if settings.supabase_url and settings.supabase_key:
+        try:
+            import httpx
+
+            url = f"{settings.supabase_url.rstrip('/')}/rest/v1/feedback"
+            headers = {
+                "apikey": settings.supabase_key,
+                "Authorization": f"Bearer {settings.supabase_key}",
+                "Content-Type": "application/json",
+                "Prefer": "return=minimal",
+            }
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                r = await client.post(url, json=record, headers=headers)
+            sinks["supabase"] = r.status_code < 300
+        except Exception as exc:
+            logger.warning("feedback_supabase_failed", error=str(exc))
+    return sinks
+
+
+@app.post("/feedback")
+async def submit_feedback(body: FeedbackRequest):
+    label = body.label.lower().strip()
+    if label not in {"fraud", "legit"}:
+        return JSONResponse(
+            status_code=422, content={"detail": "label must be 'fraud' or 'legit'."}
+        )
+    record = {
+        "trans_id": body.trans_id,
+        "decision": body.decision,
+        "fraud_score": body.fraud_score,
+        "label": label,
+        "note": body.note,
+        "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "model_version": settings.model_version,
+    }
+    sinks = await _store_feedback(record)
+    return {"ok": sinks["jsonl"] or sinks["supabase"], "stored": sinks}

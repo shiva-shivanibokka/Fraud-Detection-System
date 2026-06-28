@@ -45,5 +45,11 @@ huggingface_hub==1.21.0
 # --- Velocity feature store (Redis dual-mode, in-memory fallback) ---
 redis==8.0.1
 
+# --- LLM copilot relay (BYOK) + optional Supabase REST insert for feedback ---
+# httpx is the async client used to relay user-keyed chat completions to
+# OpenAI/Groq and to best-effort POST analyst feedback to Supabase. No vendor
+# SDK is pulled in; both APIs are spoken over plain HTTPS.
+httpx==0.28.1
+
 # --- Structured logging ---
 structlog==26.1.0

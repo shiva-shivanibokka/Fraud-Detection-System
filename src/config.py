@@ -33,8 +33,14 @@ class Settings(BaseSettings):
     # Hugging Face Hub (model registry)
     hf_repo_id: str = ""
 
-    # LLM copilot backend: "openai" or "groq"
+    # LLM copilot backend: "openai" or "groq". Keys are BYOK (per-request
+    # X-LLM-Key header from the browser) — never read from the server env.
     llm_provider: str = "openai"
+
+    # Analyst feedback loop: where ✓/✗ labels land. JSONL is the always-on local
+    # sink; if supabase_url/key are set, each label is also best-effort inserted
+    # into the Supabase "feedback" table for the retrain trigger.
+    feedback_path: str = "data/feedback.jsonl"
 
     # Deployed model version tag (used in /decisions records)
     model_version: str = "1.0.0"
