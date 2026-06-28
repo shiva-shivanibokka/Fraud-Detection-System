@@ -20,3 +20,7 @@ CREATE TABLE IF NOT EXISTS analyst_feedback (
 
 CREATE INDEX IF NOT EXISTS idx_analyst_feedback_created_at ON analyst_feedback(created_at);
 CREATE INDEX IF NOT EXISTS idx_analyst_feedback_label ON analyst_feedback(label);
+
+-- Non-sensitive demo data; the API writes with the service_role key. Disable
+-- RLS so reads work without per-row policies (Supabase enables it by default).
+ALTER TABLE analyst_feedback DISABLE ROW LEVEL SECURITY;

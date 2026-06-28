@@ -22,3 +22,10 @@ CREATE INDEX IF NOT EXISTS idx_live_decisions_created_at ON live_decisions(creat
 
 -- Stream INSERTs to subscribed browsers. (No-op error if already a member.)
 ALTER PUBLICATION supabase_realtime ADD TABLE live_decisions;
+
+-- The browser reads + subscribes with the public anon key, and the data is
+-- non-sensitive (decision + coarse features, no PII). Supabase enables RLS on
+-- new tables, which would block the anon key from reading rows AND from
+-- receiving Realtime events. Disable it so the public feed works. The API
+-- inserts with the service_role key (which bypasses RLS either way).
+ALTER TABLE live_decisions DISABLE ROW LEVEL SECURITY;
