@@ -320,7 +320,7 @@ Reported under **two** protocols, transparently:
 
 > Metrics were produced by the scripts in this repo (`src/model/train.py`, `src/graph_fraud/`) on the stated splits; they are reproducible, not hand-entered. The tabular table above was re-verified by re-scoring the held-out test set (185,564 rows) with the deployed model.
 >
-> **Deployed-artifact note:** the live `GET /graph/elliptic` endpoint (and the dashboard's GNN tab) currently serves the **GAT baseline** export (illicit-F1 ≈ 0.21 under the val-based protocol), not the benchmark-winning EvolveGCN-O. Re-exporting that artifact from EvolveGCN-O is tracked in the [Roadmap](#roadmap).
+> **Deployed-artifact note:** the live `GET /graph/elliptic` endpoint (and the dashboard's GNN tab) serve the **EvolveGCN-O** export under validation-based early stopping (illicit-F1 ≈ 0.24, AUC ≈ 0.80 on the current export — exact figures vary slightly run-to-run on GPU). The best-epoch column above is an optimistic upper bound, reported alongside for transparency.
 
 ---
 
@@ -329,7 +329,7 @@ Reported under **two** protocols, transparently:
 Stated plainly — a portfolio project is more credible when it's candid about its edges:
 
 - **Free-tier cold starts.** The backend runs on Render's free tier, which sleeps after ~15 min idle, so the first request after a nap can take ~60s. A scheduled GitHub Action pings `/health` to keep it warm and the frontend shows a "waking up" banner with retries — but a cold first hit is still possible.
-- **The deployed GNN is the GAT baseline.** Module 2's benchmark winner is EvolveGCN-O, but the live `/graph/elliptic` endpoint currently serves the GAT baseline export (illicit-F1 ≈ 0.21). Illicit-F1 is modest in absolute terms — the Elliptic illicit class is heavily imbalanced — so this module is positioned as a rigorous benchmark **study**, not a production model.
+- **The GNN is a benchmark study, not a production detector.** The live `/graph/elliptic` serves EvolveGCN-O — the benchmark winner — under rigorous validation-based early stopping, but illicit-F1 is modest in absolute terms (~0.24) because the Elliptic illicit class is heavily imbalanced. Treat this module as an honest model comparison, not a deployable fraud detector.
 - **No online retraining.** The analyst feedback loop logs ✓/✗ labels and a scheduled job flags when enough new labels have accrued, but retraining is still a manual, offline step — the model does not update itself in production.
 - **Public endpoints are demo-grade.** The scoring API has no authentication or rate-limiting and runs single-region. Fine for a portfolio demo; not production-hardened.
 - **Copilot retrieval is keyword-grounded.** The LLM assistant grounds on the system's own rules/rings/metrics via keyword retrieval, not embeddings — semantic pgvector RAG is deliberately deferred to keep heavyweight `torch` off the free-tier serving box (see Roadmap).
@@ -339,7 +339,7 @@ Stated plainly — a portfolio project is more credible when it's candid about i
 ## Roadmap
 
 - **pgvector semantic RAG** — upgrade the copilot's keyword-grounded retrieval to embeddings-backed pgvector retrieval (kept off the free-tier serving box today because sentence-transformers pulls torch)
-- **Serve the EvolveGCN-O artifact** — the GNN Predictions tab and `/graph/elliptic` are live but currently serve the GAT baseline export; re-export `elliptic_graph.json` from the benchmark-winning EvolveGCN-O and publish to HF Hub so the live numbers match the benchmark
+- **Online retraining from the feedback loop** — today the analyst ✓/✗ labels are logged and a scheduled job flags when enough have accrued, but retraining is a manual, offline step; wiring the trigger to an automated retrain-and-promote pipeline is future work
 
 ---
 

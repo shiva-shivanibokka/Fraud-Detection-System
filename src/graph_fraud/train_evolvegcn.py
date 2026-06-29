@@ -64,6 +64,10 @@ def build_snapshots(data, node_time, device) -> list:
             "train": data.train_mask[involved] & is_center,
             "val": data.val_mask[involved] & is_center,
             "test": data.test_mask[involved] & is_center,
+            # Global node indices + center mask, so the prediction exporter can
+            # map each snapshot's center-node logits back to global node ids.
+            "involved": involved,
+            "is_center": is_center,
         })
     return snaps
 
