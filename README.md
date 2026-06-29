@@ -1,6 +1,6 @@
 # Fraud Detection Platform
 
-> Real-time tabular fraud scoring (deployed) **+** a graph-neural-network research module on real Bitcoin fraud data.
+> An end-to-end, **deployed** fraud-detection platform on free-tier infra — model registry → CI → deploy — pairing a real-time tabular scoring API with a graph-neural-network benchmark on real Bitcoin fraud data.
 
 [![CI](https://github.com/shiva-shivanibokka/Fraud-Detection-System/actions/workflows/ci.yml/badge.svg)](https://github.com/shiva-shivanibokka/Fraud-Detection-System/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.11-blue)
@@ -318,14 +318,28 @@ Reported under **two** protocols, transparently:
 
 **Finding:** **EvolveGCN-O leads on illicit-F1 under both protocols.** The comparison shows *which* temporal inductive bias fits this graph: snapshot-based weight evolution (EvolveGCN) helps, while continuous-time edge-gap attention (TGAT) does not beat even the static GAT here. The gap between the two protocols reflects honest, validation-based model selection rather than reporting only the best epoch.
 
-> Metrics were produced by the scripts in this repo (`src/model/train.py`, `src/graph_fraud/`) on the stated splits; they are reproducible, not hand-entered.
+> Metrics were produced by the scripts in this repo (`src/model/train.py`, `src/graph_fraud/`) on the stated splits; they are reproducible, not hand-entered. The tabular table above was re-verified by re-scoring the held-out test set (185,564 rows) with the deployed model.
+>
+> **Deployed-artifact note:** the live `GET /graph/elliptic` endpoint (and the dashboard's GNN tab) currently serves the **GAT baseline** export (illicit-F1 ≈ 0.21 under the val-based protocol), not the benchmark-winning EvolveGCN-O. Re-exporting that artifact from EvolveGCN-O is tracked in the [Roadmap](#roadmap).
+
+---
+
+## Limitations & Known Tradeoffs
+
+Stated plainly — a portfolio project is more credible when it's candid about its edges:
+
+- **Free-tier cold starts.** The backend runs on Render's free tier, which sleeps after ~15 min idle, so the first request after a nap can take ~60s. A scheduled GitHub Action pings `/health` to keep it warm and the frontend shows a "waking up" banner with retries — but a cold first hit is still possible.
+- **The deployed GNN is the GAT baseline.** Module 2's benchmark winner is EvolveGCN-O, but the live `/graph/elliptic` endpoint currently serves the GAT baseline export (illicit-F1 ≈ 0.21). Illicit-F1 is modest in absolute terms — the Elliptic illicit class is heavily imbalanced — so this module is positioned as a rigorous benchmark **study**, not a production model.
+- **No online retraining.** The analyst feedback loop logs ✓/✗ labels and a scheduled job flags when enough new labels have accrued, but retraining is still a manual, offline step — the model does not update itself in production.
+- **Public endpoints are demo-grade.** The scoring API has no authentication or rate-limiting and runs single-region. Fine for a portfolio demo; not production-hardened.
+- **Copilot retrieval is keyword-grounded.** The LLM assistant grounds on the system's own rules/rings/metrics via keyword retrieval, not embeddings — semantic pgvector RAG is deliberately deferred to keep heavyweight `torch` off the free-tier serving box (see Roadmap).
 
 ---
 
 ## Roadmap
 
 - **pgvector semantic RAG** — upgrade the copilot's keyword-grounded retrieval to embeddings-backed pgvector retrieval (kept off the free-tier serving box today because sentence-transformers pulls torch)
-- **Stream the GNN to production** — the dashboard's GNN Predictions tab and the `/graph/elliptic` endpoint are live; publishing the generated `elliptic_graph.json` to HF Hub lights it up on the deployed site
+- **Serve the EvolveGCN-O artifact** — the GNN Predictions tab and `/graph/elliptic` are live but currently serve the GAT baseline export; re-export `elliptic_graph.json` from the benchmark-winning EvolveGCN-O and publish to HF Hub so the live numbers match the benchmark
 
 ---
 
