@@ -596,13 +596,27 @@ const ringColor = (i) => RING_PALETTE[(i ?? 0) % RING_PALETTE.length];
 // Clean force diagram of ONE ring: its cards (colored) + shared devices (grey).
 function RingDiagram({ nodes, links, color }) {
   const svgRef = useRef(null);
+  const [width, setWidth] = useState(0);
+  // Track the container width. The SVG mounts at width 0 when the tab first
+  // becomes visible; without this the initial layout piles every node into the
+  // top-left corner until you reselect a ring. Re-run once we have a real width.
   useEffect(() => {
-    if (!svgRef.current) return;
+    const el = svgRef.current?.parentElement;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const cw = entries[0]?.contentRect?.width || 0;
+      if (cw > 0) setWidth(cw);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  useEffect(() => {
+    if (!svgRef.current || !width) return;
     const N = (nodes || []).map((n) => ({ ...n }));
     const L = (links || []).map((l) => ({ ...l }));
     d3.select(svgRef.current).selectAll("*").remove();
     if (!N.length) return;
-    const W = svgRef.current.parentElement.clientWidth || 420, H = 300;
+    const W = width, H = 300;
     const svg = d3.select(svgRef.current).attr("width", W).attr("height", H);
     const g = svg.append("g");
     svg.call(d3.zoom().scaleExtent([0.4, 4]).on("zoom", (e) => g.attr("transform", e.transform)));
@@ -627,7 +641,7 @@ function RingDiagram({ nodes, links, color }) {
       node.attr("transform", (d) => `translate(${d.x},${d.y})`);
     });
     return () => sim.stop();
-  }, [nodes, links, color]);
+  }, [nodes, links, color, width]);
   return <svg ref={svgRef} style={{ background: "#FBFCFE", borderRadius: 14, width: "100%", border: `1px solid ${C.border}` }} />;
 }
 
