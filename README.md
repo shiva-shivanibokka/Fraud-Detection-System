@@ -287,7 +287,53 @@ CI (`.github/workflows/ci.yml`) runs Ruff + pytest on every push to `main`, pull
 | Backend API | **Render** (free tier) | Live (build pulls model from HF Hub; `render.yaml` blueprint) |
 | Model registry | **Hugging Face Hub** | `shiva-1993/fraud-detection-model` |
 
-A free cron job pings `/health` to keep the free-tier backend warm. The backend ships a lean dependency set (`requirements-api.txt`) so it fits the 512 MB free-tier RAM.
+A scheduled GitHub Action (`.github/workflows/keep-warm.yml`) pings `/health` to keep the free-tier backend warm. The backend ships a lean dependency set (`requirements-api.txt`) so it fits the 512 MB free-tier RAM.
+
+### Deploy from scratch (reproduce the deployment)
+
+End-to-end runbook to stand the whole platform up from zero. Env vars use bash syntax; on PowerShell use `$env:NAME = "value"`.
+
+> **Already have artifacts on Hugging Face Hub?** Skip steps 1–2 — the Render build pulls the model from HF automatically, so redeploying the services is just steps 3–4.
+
+**1. Train the models and build the serving artifacts** (writes everything to `models/`)
+```bash
+pip install -r requirements.txt            # full training/research deps
+python src/pipeline.py                      # data → velocity → rules → calibrated XGBoost (+ ONNX, drift)
+python -m src.model.calibrate_conformal     # conformal.json   (MAPIE threshold)
+python -m src.model.export_cf_ranges        # cf_ranges.json   (DICE feature ranges)
+python -m scripts.export_rings              # ring_stats.json
+python -m scripts.export_entity_graph       # entity_graph.json
+python -m scripts.export_encoders           # encoders.json
+python -m src.graph_fraud.export_predictions # elliptic_graph.json (EvolveGCN-O; needs a GPU, auto-downloads Elliptic)
+```
+
+**2. Publish the artifacts to Hugging Face Hub**
+```bash
+export HF_REPO_ID="<your-username>/fraud-detection-model"
+export HF_TOKEN="hf_..."                    # write-scoped token from hf.co/settings/tokens
+python scripts/upload_models_to_hf.py        # uploads everything in models/
+```
+
+**3. Deploy the backend (Render)**
+- New → **Blueprint** → point at your fork; Render reads `render.yaml` (build pulls the model from HF, starts Uvicorn, health-checks `/health`).
+- Required env vars: `HF_REPO_ID` (your repo) and `CORS_ORIGINS` (JSON array including your Vercel URL, e.g. `["https://your-app.vercel.app"]`).
+- Optional: `REDIS_URL` (persistent velocity), `SUPABASE_URL` / `SUPABASE_KEY` (feedback + live feed), `SENTRY_DSN` / `ENVIRONMENT` (error tracking).
+
+**4. Deploy the frontend (Vercel)**
+- Import your fork, set **Root Directory** to `frontend/` (build `npm run build`, output `dist/`).
+- Required env var: `VITE_API_URL` = your Render backend URL.
+- Optional: `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` (enables the Live Feed tab), `VITE_SENTRY_DSN`.
+- After Vercel gives you a URL, add it to the backend's `CORS_ORIGINS` and redeploy the backend.
+
+**5. (Optional) Live feed + feedback — Supabase**
+- Create a Supabase project; in the SQL editor run `supabase/migrations/001…004` **in order**.
+- Migrations 003/004 disable row-level security so the API's anon key can insert feedback + live decisions.
+- Set the `SUPABASE_*` vars on Render and the `VITE_SUPABASE_*` vars on Vercel (from step 3/4).
+
+**6. (Optional) Keep the free backend warm**
+- Edit `HEALTH_URL` in `.github/workflows/keep-warm.yml` to your Render URL. The scheduled job pings `/health` every 10 min; use **Run workflow** to warm it on demand before a demo.
+
+> The **AI Assistant** needs no deploy config — it's bring-your-own-key: users paste their own LLM key in the app's Settings tab, relayed per-request and never stored server-side.
 
 ---
 
