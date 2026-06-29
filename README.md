@@ -101,6 +101,35 @@ The full reasoning behind these and other choices (ensemble rejection, temporal-
 
 ---
 
+## Engineering Decisions & Findings
+
+The theme of this project is **earn the complexity**: every "more sophisticated" option was A/B-tested against a simpler baseline on the *same* production metrics and kept only if it measurably won. Two of those experiments are worth calling out because the result was counter-intuitive — the fancier model lost.
+
+### Ensembling made the model *worse*, not better
+
+The obvious next move after a strong single XGBoost is to ensemble it with a second gradient booster. It didn't pan out across the configurations tried:
+
+- **XGBoost + LightGBM (soft vote).** The LightGBM member was simply weaker (~**0.874** vs **0.906** AUC-PR). Averaging two probabilities only helps when the members are *comparably strong* and make *different* errors; here the weaker member dragged the blended score **below** the single-model baseline.
+- **XGBoost + CatBoost (soft vote, Optuna-tuned).** CatBoost is a genuine peer of XGBoost, so this had a real shot. The CatBoost member was HPO-tuned for AUC-PR, soft-voted, isotonic-calibrated on a prefit holdout, and evaluated against the current baseline on the *same* production metrics (AUC-PR, precision@k, dollar-capture). It **still didn't beat** the calibrated single XGBoost.
+
+**Decision:** ship the simpler, calibrated single XGBoost. The ensemble code (`src/model/train_ensemble.py`) stays in the repo as **evidence of the experiment**, not as the production model. **Lesson:** a soft-vote ensemble is only as useful as its weakest member is strong — model complexity that doesn't add *error diversity* buys nothing but latency and risk.
+
+### With temporal GNNs, the right inductive bias beat the fancier model
+
+On the Elliptic graph, the real question wasn't "static vs. temporal" but "*which* temporal structure fits the data":
+
+- **TGAT** (continuous-time edge-gap attention) is the more elaborate model — yet it didn't beat even the **static GAT** on illicit-F1 (0.314 vs. 0.447, best-epoch).
+- **EvolveGCN-O** (evolves the GCN weights across time-step snapshots via a GRU) was the right fit, leading on illicit-F1 under *both* the best-epoch and the stricter validation-based early-stopping protocol.
+
+**Lesson:** matching the model's inductive bias to the data's actual structure (here, snapshot-to-snapshot weight drift) mattered more than reaching for the most complex temporal mechanism. Full numbers in [Results](#results).
+
+### Two more "keep it honest, keep it light" calls
+
+- **Calibrated + conformal, but serving-light.** The model is isotonic-calibrated (so 0.83 means ~83% fraud likelihood) and MAPIE conformal adds a 90%-coverage `uncertain` band — but both heavy libraries run **offline**. Serving applies a single exported threshold with plain arithmetic, so the deployed image stays inside free-tier RAM.
+- **One velocity computation, two call sites.** The sliding-window velocity features run the *exact same code* offline (training) and online (serving), eliminating train/serve skew — the most common silent cause of a model that looks great in evaluation and underperforms in production.
+
+---
+
 ## Tech Stack
 
 | Area | Choice | Why |
@@ -275,7 +304,7 @@ A free cron job pings `/health` to keep the free-tier backend warm. The backend 
 | Recall@0.1%FPR | 0.88 | fraud caught at a 1-in-1000 false-block rate |
 | **Dollar-capture rate** | **0.93** | 93% of fraudulent dollar volume flagged |
 
-**Earned-complexity check:** an XGBoost+LightGBM and XGBoost+CatBoost soft-vote ensemble was A/B-tested against the calibrated single XGBoost. It did **not** beat the simpler model on these metrics, so the **simpler model was kept** — and the experiment retained (`train_ensemble.py`) as evidence of the decision.
+**Earned-complexity check:** soft-vote ensembles (XGBoost+LightGBM, then an Optuna-tuned XGBoost+CatBoost) were A/B-tested against the calibrated single XGBoost on these same metrics and **did not beat it**, so the simpler model was kept. See [Engineering Decisions & Findings](#engineering-decisions--findings) for the full story.
 
 ### Module 2 — Elliptic GNN (illicit class; test = late time-steps)
 
