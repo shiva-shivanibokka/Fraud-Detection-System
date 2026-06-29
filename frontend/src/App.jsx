@@ -369,6 +369,43 @@ function randCard() { return Array.from({ length: 16 }, () => Math.floor(Math.ra
 function randDevice() { return "dev_" + Math.random().toString(36).slice(2, 10); }
 function randIp() { return `${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`; }
 
+// Build a transaction-time string that derives the desired hour + weekend flag.
+// Walks back from today until the weekend-ness matches, then pins the hour.
+function whenAt(hour, weekend) {
+  const d = new Date();
+  d.setHours(hour, 0, 0, 0);
+  for (let i = 0; i < 8 && (d.getDay() === 0 || d.getDay() === 6) !== !!weekend; i++) {
+    d.setDate(d.getDate() - 1);
+  }
+  return toLocalInput(d);
+}
+
+// Quick scenarios — real transactions that genuinely score across the range, so
+// one click visibly moves the gauge. Field values verified against the live
+// model: legit ~0% APPROVE, review ~73% REVIEW, fraud ~88% DECLINE. The model
+// weights night-time, amount and velocity far more than geo distance, so each
+// preset stacks several real risk signals rather than nudging one field.
+const SCENARIOS = [
+  {
+    key: "legit", label: "Likely legit", tone: "approve",
+    blurb: "Small daytime gas purchase, close to home",
+    form: { amt: "42.00", category: "gas_transport", merchant: "Riverside Market",
+            state: "CA", geo_distance_km: "8", when: whenAt(9, false) },
+  },
+  {
+    key: "review", label: "Borderline", tone: "review",
+    blurb: "Large online purchase, 2am, far from home",
+    form: { amt: "1800.00", category: "misc_net", merchant: "Riverside Market",
+            state: "NY", geo_distance_km: "2500", when: whenAt(2, true) },
+  },
+  {
+    key: "fraud", label: "Likely fraud", tone: "decline",
+    blurb: "Online spend, dead of night on a weekend, unusual location",
+    form: { amt: "1500.00", category: "shopping_net", merchant: "Riverside Market",
+            state: "NY", geo_distance_km: "1500", when: whenAt(1, true) },
+  },
+];
+
 function LiveScoring() {
   const [form, setForm] = useState(() => ({
     amt: "125.00", category: "misc_net", merchant: "Riverside Market",
@@ -381,21 +418,30 @@ function LiveScoring() {
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
   const reroll = () => setForm((f) => ({ ...f, cc_num: randCard(), device_id: randDevice(), ip_prefix: randIp() }));
 
-  const submit = async () => {
+  // Apply a quick scenario on a FRESH identity (so accumulated velocity from
+  // earlier clicks doesn't skew the score) and score it immediately.
+  const applyScenario = (sc) => {
+    const next = { ...form, ...sc.form, cc_num: randCard(), device_id: randDevice(), ip_prefix: randIp() };
+    setForm(next);
+    submit(next);
+  };
+
+  const submit = async (override) => {
+    const f = override && override.amt !== undefined ? override : form;
     setLoading(true); setError(null);
     try {
-      const when = new Date(form.when);
+      const when = new Date(f.when);
       const hour = when.getHours();
       const dow = when.getDay();
       const body = {
         trans_id: crypto.randomUUID?.() ?? Math.random().toString(36).slice(2),
-        cc_num: form.cc_num, device_id: form.device_id, ip_prefix: form.ip_prefix,
-        merchant: form.merchant, category: form.category,
-        amt: parseFloat(form.amt) || 0, hour, day_of_week: dow,
+        cc_num: f.cc_num, device_id: f.device_id, ip_prefix: f.ip_prefix,
+        merchant: f.merchant, category: f.category,
+        amt: parseFloat(f.amt) || 0, hour, day_of_week: dow,
         is_weekend: dow === 0 || dow === 6 ? 1 : 0,
         is_night: hour < 6 || hour >= 22 ? 1 : 0,
-        age: 35, geo_distance_km: parseFloat(form.geo_distance_km) || 0,
-        city_pop: 150000, state: form.state, gender: "M", timestamp: when.getTime() / 1000,
+        age: 35, geo_distance_km: parseFloat(f.geo_distance_km) || 0,
+        city_pop: 150000, state: f.state, gender: "M", timestamp: when.getTime() / 1000,
       };
       const res = await apiFetch("/score", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
@@ -415,6 +461,31 @@ function LiveScoring() {
       <div className="grid-2">
         <Card>
           <CardHead kicker="Module 1 · scoring engine" title="Transaction" />
+          <div style={{ marginBottom: 18 }}>
+            <span style={{ ...label, marginBottom: 9 }}>
+              Try a scenario <Info text="One-click presets that fill a real transaction and score it. The model weights night-time, amount and velocity far more than distance, so each preset stacks several risk signals — watch the gauge sweep from approve to decline." />
+            </span>
+            <div style={{ display: "flex", gap: 9, flexWrap: "wrap" }}>
+              {SCENARIOS.map((sc) => (
+                <button key={sc.key} type="button" onClick={() => applyScenario(sc)} disabled={loading}
+                  title={sc.blurb}
+                  style={{
+                    flex: "1 1 0", minWidth: 124, cursor: loading ? "default" : "pointer",
+                    background: `${C[sc.tone]}12`, border: `1px solid ${C[sc.tone]}55`,
+                    borderRadius: 11, padding: "10px 12px", textAlign: "left",
+                    fontFamily: FONT.display, transition: "transform .12s ease, filter .12s ease",
+                  }}>
+                  <span style={{ display: "flex", alignItems: "center", gap: 7, fontWeight: 700, fontSize: 13.5, color: C[sc.tone] }}>
+                    <span style={{ width: 8, height: 8, borderRadius: "50%", background: C[sc.tone] }} />
+                    {sc.label}
+                  </span>
+                  <span style={{ display: "block", marginTop: 4, fontSize: 11.5, lineHeight: 1.35, color: C.faint, fontFamily: FONT.mono }}>
+                    {sc.blurb}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
           <div className="grid-fields">
             {[["Amount ($)", "amt", "number"], ["Geo distance (km)", "geo_distance_km", "number"],
               ["Merchant", "merchant", "text"]].map(([lbl, key, type]) => (
