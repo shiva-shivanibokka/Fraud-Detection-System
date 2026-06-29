@@ -1,0 +1,50 @@
+name: Keep backend warm
+
+# The Render free tier spins the API down after ~15 min of inactivity, so the
+# first request after idle takes up to ~60s (a bad look during a live demo).
+# This pings /health on a schedule to keep the instance awake, and can also be
+# run on demand right before a demo via the "Run workflow" button.
+#
+# Caveats:
+#   - GitHub's scheduled crons are best-effort and can be delayed 5-15+ min
+#     under load, so warmth isn't guaranteed by the schedule alone. Use the
+#     manual run (workflow_dispatch) just before you present for certainty.
+#   - Render's free tier allows ~750 instance-hours/month. Pinging 24/7 keeps
+#     the single service awake ~720 hrs/month — within the free budget, but with
+#     little headroom. To conserve, narrow the cron to your demo hours, e.g.
+#     "*/10 13-23 * * *" for ~1pm-11pm UTC only.
+
+on:
+  schedule:
+    - cron: "*/10 * * * *" # every 10 minutes
+  workflow_dispatch: {}     # manual "warm it now" button
+
+concurrency:
+  group: keep-warm
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    env:
+      HEALTH_URL: https://fraud-detection-api-oxhz.onrender.com/health
+    steps:
+      - name: Ping /health until the service responds
+        run: |
+          # A cold instance can take ~50s to wake, so retry for up to ~2 min and
+          # only fail if it never comes up.
+          for attempt in $(seq 1 8); do
+            code=$(curl -s -o /tmp/health.json -w "%{http_code}" --max-time 70 "$HEALTH_URL" || echo 000)
+            if [ "$code" = "200" ]; then
+              echo "Backend is awake (HTTP 200) on attempt $attempt:"
+              cat /tmp/health.json
+              exit 0
+            fi
+            echo "Attempt $attempt: HTTP $code — backend still waking, retrying in 15s…"
+            sleep 15
+          done
+          echo "Backend did not return 200 after retries."
+          exit 1
