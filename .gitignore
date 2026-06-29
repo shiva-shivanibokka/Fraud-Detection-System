@@ -14,9 +14,10 @@ models/entity_graph.json
 models/encoders.json
 models/ring_stats.json
 
-# Local audit working docs (kept out of the public portfolio repo)
+# Local-only docs kept out of the public portfolio repo
 AUDIT.md
 PLAN.md
+CLAUDE.md
 models/*.pkl
 models/*.onnx
 models/*.json
