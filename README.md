@@ -11,8 +11,10 @@
 ## Recruiter TL;DR
 
 - **What it is:** A fraud-detection platform with two complementary parts — a **production, deployed real-time scoring API** (FastAPI + calibrated XGBoost, with conformal uncertainty and counterfactual explanations) and a **graph-neural-network module** that benchmarks static vs. temporal GNNs on the real **Elliptic Bitcoin** fraud graph.
-- **Hardest problem solved:** Shipping an end-to-end MLOps loop on free-tier infra — model registry (Hugging Face Hub) → CI (GitHub Actions) → deploy (Render + Vercel) — *and* rigorously A/B-testing model complexity (ensembles, GNNs) instead of assuming fancier is better.
-- **Real numbers:** Tabular model **AUC-PR 0.906**, **93% fraud-dollar capture** (temporal eval); GNN module — **EvolveGCN-O beats static GAT and TGAT on illicit-F1** on Elliptic.
+- **Hardest problem solved:** Finding a **label leak I had written myself**. The tabular model reported AUC-ROC 0.997 — implausible for fraud. The entity synthesizer was assigning devices and IPs *using the label*, so the graph features fed the answer back to the model. Fixing it cut AUC-PR from 0.906 to **0.314** and dollar-capture from 0.93 to **0.182**. The honest number is the one below. ([full write-up](#the-0997-that-wasnt-a-leak-in-the-entity-synthesizer))
+- **Also:** an end-to-end MLOps loop on free-tier infra — model registry (Hugging Face Hub) → CI (GitHub Actions) → deploy (Render + Vercel) — and rigorous A/B-testing of model complexity (ensembles, GNNs) instead of assuming fancier is better.
+- **Real numbers:** Tabular model **AUC-PR 0.314** at a 0.49% base rate (~64× lift) on *synthetic* Sparkov data; GNN module — **EvolveGCN-O beats static GAT and TGAT on illicit-F1** on the **real** Elliptic Bitcoin graph.
+- **Data provenance:** the tabular module runs on the Kaggle **Sparkov generator** (not real payments); only the Elliptic GNN module uses real-world fraud data. Metrics are labelled accordingly throughout.
 
 ---
 
@@ -109,7 +111,14 @@ The theme of this project is **earn the complexity**: every "more sophisticated"
 
 The obvious next move after a strong single XGBoost is to ensemble it with a second gradient booster. It didn't pan out across the configurations tried:
 
-- **XGBoost + LightGBM (soft vote).** The LightGBM member was simply weaker (~**0.874** vs **0.906** AUC-PR). Averaging two probabilities only helps when the members are *comparably strong* and make *different* errors; here the weaker member dragged the blended score **below** the single-model baseline.
+> **Stale absolutes, intact conclusion.** These experiments predate the
+> [leakage fix](#the-0997-that-wasnt-a-leak-in-the-entity-synthesizer), so the
+> AUC-PR values quoted here come from the leaked baseline. Both members were
+> inflated by the same leak, so the *relative* finding — the ensemble lost to the
+> calibrated single XGBoost — still stands. Re-running the A/B on the corrected
+> data is open work.
+
+- **XGBoost + LightGBM (soft vote).** The LightGBM member was simply weaker (~**0.874** vs **0.906** AUC-PR, both pre-fix). Averaging two probabilities only helps when the members are *comparably strong* and make *different* errors; here the weaker member dragged the blended score **below** the single-model baseline.
 - **XGBoost + CatBoost (soft vote, Optuna-tuned).** CatBoost is a genuine peer of XGBoost, so this had a real shot. The CatBoost member was HPO-tuned for AUC-PR, soft-voted, isotonic-calibrated on a prefit holdout, and evaluated against the current baseline on the *same* production metrics (AUC-PR, precision@k, dollar-capture). It **still didn't beat** the calibrated single XGBoost.
 
 **Decision:** ship the simpler, calibrated single XGBoost. The ensemble code (`src/model/train_ensemble.py`) stays in the repo as **evidence of the experiment**, not as the production model. **Lesson:** a soft-vote ensemble is only as useful as its weakest member is strong — model complexity that doesn't add *error diversity* buys nothing but latency and risk.
@@ -341,16 +350,80 @@ python scripts/upload_models_to_hf.py        # uploads everything in models/
 
 ### Module 1 — tabular scoring (temporal eval, 2019 train / 2020 test)
 
+> **These numbers were revised down after a leakage fix.** An earlier version of
+> this table reported AUC-ROC 0.997 / AUC-PR 0.906 / dollar-capture 0.93. Those
+> figures were produced by a label leak in the entity synthesizer, not by the
+> model. The leak is fixed and the honest numbers are below. See
+> [The 0.997 that wasn't](#the-0997-that-wasnt-a-leak-in-the-entity-synthesizer).
+
+Source data is the Kaggle **Sparkov** set — *generator-produced, not real
+payments* — subsampled to 30% (555,718 transactions; test fraud rate 0.49%).
+
 | Metric | Value | Meaning |
 |---|---|---|
-| AUC-ROC | 0.997 | discrimination |
-| **AUC-PR** | **0.906** | precision on severely imbalanced data |
-| Precision@1% | 0.45 | of the top-1% flagged, 45% are real fraud |
-| Precision@0.5% | 0.84 | hit rate at a tighter review threshold |
-| Recall@0.1%FPR | 0.88 | fraud caught at a 1-in-1000 false-block rate |
-| **Dollar-capture rate** | **0.93** | 93% of fraudulent dollar volume flagged |
+| AUC-ROC | 0.950 | discrimination |
+| **AUC-PR** | **0.314** | precision on severely imbalanced data — ~64× lift over the 0.49% base rate |
+| Precision@1% | 0.236 | of the top-1% flagged, 24% are real fraud |
+| Recall@0.1%FPR | 0.176 | fraud caught at a 1-in-1000 false-block rate |
+| **Dollar-capture rate** | **0.182** | 18% of fraudulent dollar volume flagged |
 
-**Earned-complexity check:** soft-vote ensembles (XGBoost+LightGBM, then an Optuna-tuned XGBoost+CatBoost) were A/B-tested against the calibrated single XGBoost on these same metrics and **did not beat it**, so the simpler model was kept. See [Engineering Decisions & Findings](#engineering-decisions--findings) for the full story.
+AUC-PR 0.314 against a 0.49% base rate is a real model (~64× lift), and it is a
+far less flattering number than the one it replaces. That is the point: the
+previous table was measuring the synthesizer, not the classifier.
+
+**Earned-complexity check:** soft-vote ensembles (XGBoost+LightGBM, then an
+Optuna-tuned XGBoost+CatBoost) were A/B-tested against the calibrated single
+XGBoost and **did not beat it**, so the simpler model was kept. That A/B was run
+against the pre-fix baseline; the conclusion (simpler won) is unaffected by the
+leak, but the absolute numbers quoted in that section are stale.
+
+### The 0.997 that wasn't: a leak in the entity synthesizer
+
+The raw Sparkov data has no device or IP fields, so `synthesize_entity_fields()`
+invents them. It invented them **using the label**, in two deterministic ways:
+
+```python
+ring_devices = rng.choice(device_pool[: n_devices // 3], ...)   # fraud cards only
+primary      = rng.choice(device_pool[n_devices // 3 :])        # legit cards only
+card_to_prefix[card] = f"192.168.{...}"                         # fraud cards only
+```
+
+Fraud cards were confined to one slice of the device pool and handed a dedicated
+`192.168.*` range while everyone else got `10.*`. The graph stage aggregates
+those columns into `graph_device_fraud_rate` / `graph_ip_fraud_rate` and feeds
+them to XGBoost — so the label reached the model through a synthetic feature it
+had authored itself. The temporal split was correct and could not help: the leak
+was baked into the features before the split ever happened.
+
+Measured on a toy harness, fitting per-entity fraud rate on train and scoring
+test (exactly what the graph features do):
+
+| Signal | Before | After |
+|---|---|---|
+| `ip_prefix` → label (temporal AUC) | 0.982 | 0.625 |
+| `ip_prefix` → label, rings disabled | — | 0.486 *(chance)* |
+| card-level IP pool shared fraud↔legit | 0% *(disjoint)* | 100% |
+
+**A second bug was hiding inside the first.** `legit_cards` was defined as every
+card with a non-fraud transaction — which includes fraud cards, since they
+transact legitimately too. The legit loop ran second and **overwrote** the ring
+device assignments, so the fraud rings barely existed. GraphSAGE, ring detection
+and FP-Growth were all working on structure that had been quietly erased, while
+the IP leak carried the model to 0.997. Two bugs partly cancelling, with a
+flattering number sitting on top.
+
+The fix keeps rings real but makes their signal *earned*: one shared device pool,
+only 25% of fraud cards in rings (most card fraud is one-off compromise, not
+collusion), and no fraud-specific address space. `tests/test_data_prep_leakage.py`
+fails if any of it regresses.
+
+**Honest caveat that remains:** ring membership is still drawn using `is_fraud`,
+because the generator has to decide who colludes. Device/IP therefore still
+correlate with the label by construction, and graph-derived features here remain
+optimistic relative to production, where entities are observed rather than
+generated. `device_id` retains ~0.94 temporal AUC even with rings fully disabled
+— that is card reputation (the same cards span the split), a legitimately
+predictive production signal, not an artifact.
 
 ### Module 2 — Elliptic GNN (illicit class; test = late time-steps)
 
@@ -364,7 +437,7 @@ Reported under **two** protocols, transparently:
 
 **Finding:** **EvolveGCN-O leads on illicit-F1 under both protocols.** The comparison shows *which* temporal inductive bias fits this graph: snapshot-based weight evolution (EvolveGCN) helps, while continuous-time edge-gap attention (TGAT) does not beat even the static GAT here. The gap between the two protocols reflects honest, validation-based model selection rather than reporting only the best epoch.
 
-> Metrics were produced by the scripts in this repo (`src/model/train.py`, `src/graph_fraud/`) on the stated splits; they are reproducible, not hand-entered. The tabular table above was re-verified by re-scoring the held-out test set (185,564 rows) with the deployed model.
+> Metrics were produced by the scripts in this repo (`src/model/train.py`, `src/graph_fraud/`) on the stated splits; they are reproducible, not hand-entered. The tabular table was regenerated end-to-end (`python src/pipeline.py --subsample 0.3 --force`) after the leakage fix — train 277,668 / test 278,050.
 >
 > **Deployed-artifact note:** the live `GET /graph/elliptic` endpoint (and the dashboard's GNN tab) serve the **EvolveGCN-O** export under validation-based early stopping (illicit-F1 ≈ 0.24, AUC ≈ 0.80 on the current export — exact figures vary slightly run-to-run on GPU). The best-epoch column above is an optimistic upper bound, reported alongside for transparency.
 
