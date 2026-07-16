@@ -1,18 +1,27 @@
 """
 Data Preparation Pipeline
 ==========================
-Loads the Credit Card Fraud Transaction dataset, synthesizes realistic
-entity identifiers (device IDs, IP addresses) needed for graph construction,
-and produces a clean enriched DataFrame saved as Parquet.
+Loads the Credit Card Fraud Transaction dataset, synthesizes entity identifiers
+(device IDs, IP addresses) needed for graph construction, and produces a clean
+enriched DataFrame saved as Parquet.
+
+Provenance — this data is simulated, not real
+  The source files (fraudTrain.csv / fraudTest.csv) are the Kaggle "Sparkov"
+  credit-card fraud set, which is produced by a transaction generator rather
+  than collected from real payments. Metrics computed here should be read as
+  evidence that the pipeline is correct, not as production fraud performance.
+  (The separate Elliptic module under src/graph_fraud/ *does* use real data.)
 
 Why synthesize device/IP fields?
-  The raw transaction dataset contains card numbers and merchant IDs but no
-  device or IP fields — these would come from the payment page in production.
-  We synthesize them with realistic statistical properties:
+  The raw dataset contains card numbers and merchant IDs but no device or IP
+  fields — these would come from the payment page in production. We synthesize
+  them so the entity-resolution and graph stages have something to resolve:
     - Shared device IDs across cards (fraud rings share devices)
     - Shared IP prefixes across related accounts (household / VPN / proxy)
-    - Fraudulent cards share devices/IPs at higher rates than legitimate ones
-  This mirrors the entity resolution problem at Stripe, Airbnb, and PayPal.
+    - A minority of fraud cards collude in rings and share devices/IPs
+  Because ring membership is drawn using the label, these fields correlate with
+  fraud by construction. Graph features built on them are therefore optimistic
+  — see synthesize_entity_fields() for the full leakage note.
 
 Temporal split:
   We use a strict time-based split (Jan 2019 – Dec 2019 = train,
@@ -63,15 +72,43 @@ def load_raw(subsample: float = 1.0) -> pd.DataFrame:
     return df
 
 
-def synthesize_entity_fields(df: pd.DataFrame, seed: int = 42) -> pd.DataFrame:
+def synthesize_entity_fields(
+    df: pd.DataFrame, seed: int = 42, ring_fraction: float = 0.25
+) -> pd.DataFrame:
     """
     Synthesize device IDs and IP addresses with realistic fraud-ring properties.
 
     Statistical properties modelled on production fraud data:
-      - Each card uses 1-3 devices (most use 1 primary device)
-      - Fraud rings: 3-8 fraudulent cards share the same device/IP
+      - Each card uses 1-2 devices (most use 1 primary device)
+      - Fraud rings: a *minority* of fraud cards collude and share a device/IP
       - Legitimate cards occasionally share devices (household)
-      - IP prefixes are shared within geographic areas (city_pop-based)
+      - IP prefixes are shared within geographic areas (lat/long bucketed)
+
+    Leakage note (read before trusting any graph-derived metric)
+    -----------------------------------------------------------
+    These fields do not exist in the raw dataset — they are simulated, and ring
+    membership is drawn using ``is_fraud``. That means device/IP correlate with
+    the label *by construction*, so any graph feature built on them is optimistic
+    relative to production, where entities are observed rather than generated.
+
+    An earlier version of this function made that correlation *deterministic*:
+    fraud and legit cards drew devices from disjoint slices of the pool, and
+    fraud cards were handed a dedicated ``192.168.*`` range while everyone else
+    got ``10.*``. Either one alone lets a model recover the label exactly, which
+    is what produced the implausible AUC-ROC of ~0.997. Three properties now
+    keep the signal earned rather than free:
+
+      1. One shared device pool — ring devices are drawn from the same pool every
+         card draws from, so a device ID never identifies a class on its own.
+      2. Only ``ring_fraction`` of fraud cards join rings. Most card fraud is
+         one-off compromise, not collusion, so the rest look like ordinary cards.
+      3. No fraud-specific address space — every card is addressed out of the
+         same geographic ``10.*`` scheme; ring members merely share one of those
+         prefixes, as a shared VPN or proxy would look in reality.
+
+    Rings remain genuinely detectable via co-occurrence structure, which is the
+    point of the graph stage — but a model now has to do the work to find them.
+    See ``tests/test_data_prep_leakage.py``, which fails if separability returns.
     """
     rng = np.random.default_rng(seed)
     cards = df["cc_num"].unique()
@@ -80,32 +117,39 @@ def synthesize_entity_fields(df: pd.DataFrame, seed: int = 42) -> pd.DataFrame:
     print("[data] Synthesizing device IDs and IP addresses...")
 
     # --- Device ID assignment ---
-    # Pool of devices: ~60% of unique cards (many cards per device for fraud rings)
+    # Pool of devices: ~65% of unique cards (many cards per device for fraud rings)
     n_devices = max(100, int(len(cards) * 0.65))
-    device_pool = [f"dev_{i:06d}" for i in range(n_devices)]
+    device_pool = np.array([f"dev_{i:06d}" for i in range(n_devices)])
+
+    fraud_cards = df.loc[df["is_fraud"] == 1, "cc_num"].unique()
+
+    # Only a minority of fraud cards belong to organised rings.
+    n_ring_cards = int(len(fraud_cards) * ring_fraction)
+    ring_cards = (
+        rng.choice(fraud_cards, size=n_ring_cards, replace=False)
+        if n_ring_cards > 0
+        else np.array([], dtype=fraud_cards.dtype)
+    )
+    n_fraud_rings = max(1, len(ring_cards) // 5)
+    # Drawn from the whole pool: a ring device is not marked by its identity.
+    ring_devices = rng.choice(device_pool, size=n_fraud_rings, replace=False)
 
     card_to_devices = {}
-    fraud_cards = df[df["is_fraud"] == 1]["cc_num"].unique()
-    legit_cards = df[df["is_fraud"] == 0]["cc_num"].unique()
-
-    # Fraud rings: groups of 4-8 fraud cards sharing the same device
-    n_fraud_rings = max(1, len(fraud_cards) // 5)
-    ring_devices = rng.choice(device_pool[: n_devices // 3], size=n_fraud_rings, replace=False)
-
-    for i, card in enumerate(fraud_cards):
-        ring_idx = i % n_fraud_rings
+    for i, card in enumerate(ring_cards):
         # Primary device is the ring device; 20% chance of using a second device
-        devices = [ring_devices[ring_idx]]
+        devices = [ring_devices[i % n_fraud_rings]]
         if rng.random() < 0.20:
             devices.append(rng.choice(device_pool))
         card_to_devices[card] = devices
 
-    for card in legit_cards:
-        # Legitimate cards: 1 primary device; 8% chance of second (shared household)
-        primary = rng.choice(device_pool[n_devices // 3 :])
-        devices = [primary]
+    for card in cards:
+        if card in card_to_devices:
+            continue
+        # Everyone else — legit cards and non-ring fraud alike: 1 primary device;
+        # 8% chance of a second (shared household).
+        devices = [rng.choice(device_pool)]
         if rng.random() < 0.08:
-            devices.append(rng.choice(device_pool[n_devices // 3 :]))
+            devices.append(rng.choice(device_pool))
         card_to_devices[card] = devices
 
     # Assign a device per transaction (weighted toward primary device)
@@ -128,12 +172,12 @@ def synthesize_entity_fields(df: pd.DataFrame, seed: int = 42) -> pd.DataFrame:
     unique_geos = geo_key.unique()
     geo_to_prefix = {g: f"10.{i // 256}.{i % 256}" for i, g in enumerate(unique_geos)}
 
-    # Fraud rings share the same /24 prefix (same VPN/proxy)
-    card_to_prefix = {}
-    for i, card in enumerate(fraud_cards):
-        ring_idx = i % n_fraud_rings
-        # Assign a fixed prefix from the ring's geographic area
-        card_to_prefix[card] = f"192.168.{ring_idx // 256}.{ring_idx % 256}"
+    # Ring members share a /24 prefix (same VPN/proxy). It is drawn from the same
+    # geographic address space everyone else uses — a dedicated range would make
+    # the prefix a pure label indicator.
+    geo_prefixes = list(geo_to_prefix.values())
+    ring_prefixes = rng.choice(geo_prefixes, size=n_fraud_rings, replace=True)
+    card_to_prefix = {card: ring_prefixes[i % n_fraud_rings] for i, card in enumerate(ring_cards)}
 
     def get_ip(row):
         if row["cc_num"] in card_to_prefix:

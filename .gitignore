@@ -22,6 +22,7 @@ models/*.pkl
 models/*.onnx
 models/*.json
 models/*.ubj
+models/*.pt
 frontend/node_modules/
 frontend/dist/
 src/__pycache__/
